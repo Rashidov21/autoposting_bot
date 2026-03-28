@@ -1,0 +1,27 @@
+# === Telegram avtopost SaaS — Python dependencylar ===
+# O'rnatish: pip install -r requirements.txt
+# Tashqi: PostgreSQL 16+, Redis 7+, Docker (ixtiyoriy)
+#
+# API
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.0
+pydantic-settings>=2.0
+python-multipart>=0.0.9
+
+# DB
+sqlalchemy>=2.0
+psycopg2-binary>=2.9.9
+
+# Queue
+celery[redis]>=5.3.0
+redis>=5.0.0
+
+# Telegram
+telethon>=1.36.0
+aiogram>=3.13.0
+PySocks>=1.7.1
+
+# Utils
+python-dotenv>=1.0.0
+cryptography>=42.0.0

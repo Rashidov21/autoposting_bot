@@ -1,0 +1,28 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from aiogram import Bot, Dispatcher
+from aiogram.fsm.storage.memory import MemoryStorage
+
+from app.core.config import get_settings
+from bot.handlers import router
+from bot.middlewares import AccessMiddleware
+
+logging.basicConfig(level=logging.INFO)
+
+
+async def main() -> None:
+    settings = get_settings()
+    if not settings.bot_token:
+        raise RuntimeError("BOT_TOKEN sozlanmagan")
+    bot = Bot(settings.bot_token)
+    dp = Dispatcher(storage=MemoryStorage())
+    dp.message.middleware(AccessMiddleware())
+    dp.include_router(router)
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
