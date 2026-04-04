@@ -14,6 +14,26 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def pause_all_running_for_user(
+    db: Session, user_id: uuid.UUID, except_campaign_id: uuid.UUID | None = None
+) -> int:
+    """Barcha running kampaniyalarni paused qiladi. except_campaign_id berilsa, uni o'tkazib yuboradi."""
+    q = select(Campaign).where(Campaign.user_id == user_id, Campaign.status == "running")
+    if except_campaign_id is not None:
+        q = q.where(Campaign.id != except_campaign_id)
+    rows = list(db.execute(q).scalars().all())
+    for c in rows:
+        c.status = "paused"
+        db.add(c)
+    return len(rows)
+
+
+def get_running_campaign_for_user(db: Session, user_id: uuid.UUID) -> Campaign | None:
+    return db.execute(
+        select(Campaign).where(Campaign.user_id == user_id, Campaign.status == "running")
+    ).scalar_one_or_none()
+
+
 def ensure_groups_for_user(db: Session, user: User, telegram_chat_ids: list[int]) -> list[uuid.UUID]:
     """Foydalanuvchi uchun guruh yozuvlarini yaratadi yoki topadi."""
     out: list[uuid.UUID] = []
@@ -82,11 +102,13 @@ def set_campaign_accounts(db: Session, campaign: Campaign, account_ids: list[uui
         db.add(CampaignAccount(campaign_id=campaign.id, account_id=aid))
 
 
-def start_campaign(db: Session, campaign: Campaign) -> Schedule:
+def start_campaign(db: Session, campaign: Campaign) -> tuple[Schedule, int]:
     if campaign.status == "running":
         s = db.execute(select(Schedule).where(Schedule.campaign_id == campaign.id)).scalar_one_or_none()
         if s:
-            return s
+            return s, 0
+
+    paused_n = pause_all_running_for_user(db, campaign.user_id, except_campaign_id=campaign.id)
 
     campaign.status = "running"
     jitter = random.uniform(0, 90)
@@ -101,7 +123,7 @@ def start_campaign(db: Session, campaign: Campaign) -> Schedule:
         db.add(s)
     db.add(campaign)
     db.flush()
-    return s
+    return s, paused_n
 
 
 def stop_campaign(db: Session, campaign: Campaign) -> None:

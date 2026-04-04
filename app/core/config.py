@@ -53,6 +53,29 @@ class Settings(BaseSettings):
     typing_simulation_probability: float = Field(default=0.82, ge=0.0, le=1.0)
     post_typing_pause_factor: float = Field(default=0.55, ge=0.2, le=1.0)
 
+    # Admin (Telegram user id lar, vergul bilan)
+    admin_telegram_ids: str = ""
+    # Tariflar (so'm, faqat ko'rsatish va mantiq uchun)
+    tariff_1_month_uzs: int = Field(default=0, ge=0)
+    tariff_6_month_uzs: int = Field(default=0, ge=0)
+    tariff_12_month_uzs: int = Field(default=0, ge=0)
+    payment_instructions_text: str = ""
+
+    @property
+    def admin_telegram_id_set(self) -> set[int]:
+        if not self.admin_telegram_ids.strip():
+            return set()
+        out: set[int] = set()
+        for part in self.admin_telegram_ids.split(","):
+            p = part.strip()
+            if not p:
+                continue
+            try:
+                out.add(int(p))
+            except ValueError:
+                continue
+        return out
+
     @property
     def telethon_api(self) -> tuple[int, str]:
         if not self.telegram_api_id or not self.telegram_api_hash:

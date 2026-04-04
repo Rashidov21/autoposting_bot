@@ -13,7 +13,7 @@
 | **Database** | Foydalanuvchilar, akkauntlar, kampaniyalar, `schedules.next_run_at`, `send_logs` | PostgreSQL + SQLAlchemy (`app/db/`) |
 | **Scheduler** | Vaqt bo‘yicha navbat — qaysi kampaniya ishga tushishi | **Celery Beat** (`worker/celery_app.py` → `beat_schedule`) |
 | **Worker** | Reja bo‘yicha vazifalar: kampaniya aylanmasi, login kodlari | **Celery worker** (`worker/tasks.py`) |
-| **Telegram bot** | `/start`, kampaniya yaratish, akkaunt ulash | **aiogram** (`bot/`) — to‘g‘ridan-to‘g‘ri DB + Celery chaqiruvi |
+| **Telegram bot** | `/start`, tarif/to‘lov, kampaniya (inline guruhlar), admin (`ADMIN_TELEGRAM_IDS`), video qo‘llanma | **aiogram** (`bot/`) — DB + Celery |
 | **API** | Health, ichki admin (ixtiyoriy) | **FastAPI** (`app/main.py`) |
 
 ### Ma’lumot oqimi (qisqa)
@@ -86,6 +86,13 @@ sequenceDiagram
 | `BOT_TOKEN` | Ha (bot) | @BotFather |
 | `FERNET_KEY` | Ha (session shifrlash) | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `INTERNAL_API_SECRET` | Ha (API himoyasi) | Uzoq tasodifiy qator |
+| `ADMIN_TELEGRAM_IDS` | Yo‘q (bot ichidagi admin panel uchun) | Telegram **user id** lar, vergul bilan: `123,456` |
+| `TARIFF_1_MONTH_UZS`, `TARIFF_6_MONTH_UZS`, `TARIFF_12_MONTH_UZS` | Yo‘q | Tarif narxlari (so‘m, faqat matn va tanlov) |
+| `PAYMENT_INSTRUCTIONS_TEXT` | Yo‘q | To‘lov rekvizitlari va ko‘rsatma (uzun matn) |
+
+**Obuna va to‘lov:** foydalanuvchi tarifni tanlab skrinshot yuboradi; admin bot ichida tasdiqlaydi. **Bitta aktiv kampaniya:** yangisi ishga tushganda qolganlari `paused` holatga o‘tadi. **Celery Beat** `expire_subscriptions` vazifasi (soatiga marta) obunasi tugagan foydalanuvchilarning ishlayotgan kampaniyalarini to‘xtatadi va xabar yuboradi.
+
+**Mavjud PostgreSQL (prod):** yangi ustunlar va `payment_requests` uchun bir marta `scripts/migrate_saas_v1.sql` ni ishlating (`psql $DATABASE_URL -f scripts/migrate_saas_v1.sql`). Keyin `payment_requests.contact_phone` uchun `scripts/migrate_saas_v2_contact_phone.sql` ni bir marta ishlating. Yangi o‘rnatishda `python -m scripts.init_db` (yangilangan `schema.sql`) yetarli.
 
 ---
 

@@ -56,7 +56,7 @@ def start_campaign(body: StartBody, db: Session = Depends(get_db)) -> dict:
     c = db.get(Campaign, cid)
     if not c or c.user_id != u.id:
         raise HTTPException(status_code=404)
-    s = campaign_service.start_campaign(db, c)
+    s, _paused = campaign_service.start_campaign(db, c)
     db.commit()
     return {"campaign_id": str(c.id), "next_run_at": s.next_run_at.isoformat()}
 

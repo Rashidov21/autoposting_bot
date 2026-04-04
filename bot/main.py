@@ -19,7 +19,9 @@ async def main() -> None:
         raise RuntimeError("BOT_TOKEN sozlanmagan")
     bot = Bot(settings.bot_token)
     dp = Dispatcher(storage=MemoryStorage())
-    dp.message.middleware(AccessMiddleware())
+    mw = AccessMiddleware()
+    dp.message.middleware(mw)
+    dp.callback_query.middleware(mw)
     dp.include_router(router)
     await dp.start_polling(bot)
 
