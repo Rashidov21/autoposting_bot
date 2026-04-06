@@ -10,8 +10,9 @@ from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from app.db.models import User
+from app.db.models import Group, User
 from app.db.session import SessionLocal
+from app.services import campaigns as campaign_service
 from app.services import subscription as subscription_service
 from app.services import system as system_service
 from app.services import users as user_service
@@ -35,6 +36,7 @@ router.message.filter(admin_only_message)
 router.callback_query.filter(admin_only_callback)
 
 USERS_PAGE = 8
+ADMIN_GROUPS_PAGE = 8
 
 
 def _fmt_subscription_line(u: User) -> str:
@@ -104,7 +106,11 @@ async def _render_users_page(callback: CallbackQuery, page: int) -> None:
                 InlineKeyboardButton(
                     text=blk,
                     callback_data=f"admin:blk:{u.id}:{page}",
-                )
+                ),
+                InlineKeyboardButton(
+                    text="👥 Guruhlar (DB)",
+                    callback_data=f"admin:ugrps:{u.id}:0",
+                ),
             ]
         )
 
@@ -124,6 +130,74 @@ async def _render_users_page(callback: CallbackQuery, page: int) -> None:
     await _edit_or_answer(callback, text, InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
+async def _render_user_groups_admin(
+    callback: CallbackQuery,
+    user_id: uuid.UUID,
+    page: int,
+) -> None:
+    db = SessionLocal()
+    try:
+        u = db.get(User, user_id)
+        groups = campaign_service.list_groups_for_user(db, user_id) if u else []
+    finally:
+        db.close()
+
+    if not u:
+        await _edit_or_answer(
+            callback,
+            "<b>Foydalanuvchi topilmadi.</b>",
+            InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="⬅️ Foydalanuvchilar", callback_data="admin:users:0")]]
+            ),
+        )
+        return
+
+    total = len(groups)
+    offset = page * ADMIN_GROUPS_PAGE
+    chunk = groups[offset : offset + ADMIN_GROUPS_PAGE]
+
+    lines: list[str] = []
+    buttons: list[list[InlineKeyboardButton]] = []
+    un = html.escape(u.username or "—")
+    head = (
+        f"<b>👥 Guruhlar (DB)</b>\n"
+        f"🆔 TG: <code>{u.telegram_id}</code> · @{un}\n"
+        f"Jami: {total}\n\n"
+    )
+
+    for g in chunk:
+        tid = g.telegram_chat_id
+        title = html.escape((g.title or "").strip() or "—")
+        gid_short = str(g.id).split("-")[0]
+        lines.append(
+            f"📌 <code>{gid_short}…</code>\n"
+            f"Chat ID: <code>{tid}</code>\n"
+            f"Nom: {title} · {'✅' if g.is_valid else '⚠️'}"
+        )
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=f"🗑 O'chirish · {gid_short}…",
+                    callback_data=f"admin:grpdel:{g.id}",
+                )
+            ]
+        )
+
+    body = "\n\n".join(lines) if lines else "<i>Guruh yo'q.</i>"
+    text = head + body
+
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"admin:ugrps:{user_id}:{page - 1}"))
+    if offset + len(chunk) < total:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"admin:ugrps:{user_id}:{page + 1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton(text="⬅️ Foydalanuvchilar", callback_data="admin:users:0")])
+
+    await _edit_or_answer(callback, text, InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
 @router.message(F.text == BTN_ADMIN)
 async def cmd_admin_entry(message: Message, state: FSMContext) -> None:
     await state.clear()
@@ -138,6 +212,51 @@ async def admin_home_cb(callback: CallbackQuery, state: FSMContext) -> None:
     except TelegramBadRequest:
         await callback.message.answer(MSG_ADMIN_MENU, reply_markup=_admin_home_kb())
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:ugrps:"))
+async def admin_user_groups_page(callback: CallbackQuery) -> None:
+    raw = (callback.data or "").replace("admin:ugrps:", "", 1)
+    try:
+        uid_str, page_str = raw.rsplit(":", 1)
+        uid = uuid.UUID(uid_str.strip())
+        page = int(page_str)
+    except (ValueError, IndexError):
+        await callback.answer("Xato")
+        return
+    await _render_user_groups_admin(callback, uid, page)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:grpdel:"))
+async def admin_group_delete(callback: CallbackQuery) -> None:
+    raw = (callback.data or "").replace("admin:grpdel:", "", 1).strip()
+    try:
+        gid = uuid.UUID(raw)
+    except ValueError:
+        await callback.answer("Xato")
+        return
+    db = SessionLocal()
+    uid: uuid.UUID | None = None
+    try:
+        g = db.get(Group, gid)
+        if not g:
+            await callback.answer("Topilmadi", show_alert=True)
+            return
+        uid = g.user_id
+        if not campaign_service.delete_group_by_id(db, gid):
+            await callback.answer("Xato", show_alert=True)
+            return
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        await callback.answer(str(e)[:120], show_alert=True)
+        return
+    finally:
+        db.close()
+    await callback.answer("DB dan o'chirildi")
+    if uid:
+        await _render_user_groups_admin(callback, uid, 0)
 
 
 @router.callback_query(F.data.startswith("admin:users:"))

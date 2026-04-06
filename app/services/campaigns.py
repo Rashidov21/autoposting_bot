@@ -179,6 +179,25 @@ def delete_user_group(db: Session, user: User, group_id: uuid.UUID) -> bool:
     return True
 
 
+def list_groups_for_user(db: Session, user_id: uuid.UUID) -> list[Group]:
+    """Foydalanuvchining barcha guruhlari (`groups` jadvali)."""
+    return list(
+        db.execute(select(Group).where(Group.user_id == user_id).order_by(Group.created_at.desc()))
+        .scalars()
+        .all()
+    )
+
+
+def delete_group_by_id(db: Session, group_id: uuid.UUID) -> bool:
+    """Admin: `groups` jadvalidan ID bo'yicha yozuvni o'chiradi (campaign_groups CASCADE)."""
+    g = db.get(Group, group_id)
+    if not g:
+        return False
+    db.delete(g)
+    db.flush()
+    return True
+
+
 def list_user_campaigns(db: Session, user_id: uuid.UUID) -> list[Campaign]:
     return list(db.execute(select(Campaign).where(Campaign.user_id == user_id)).scalars().all())
 
