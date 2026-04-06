@@ -1,12 +1,17 @@
+# Xavfsizlik: DB/Redis/API portlari faqat hostning 127.0.0.1 — tashqi tarmoqdan to'g'ridan-to'g'ri ulanish yo'q.
+# API ni boshqa portga (masalan 8006) bog'lash: "127.0.0.1:8006:8000"
+# POSTGRES_PASSWORD .env orqali (POSTGRES_PASSWORD) — yangi o'rnatishda kuchli parol qo'ying.
+# Mavjud pgdata bilan parolni o'zgartirish: DB ichida ALTER USER yoki yangi volume (ma'lumot yo'qoladi).
+
 services:
   db:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: autopost
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -24,13 +29,13 @@ services:
     build: .
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/autopost
+      DATABASE_URL: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/autopost
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       SESSIONS_DIR: /app/sessions
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - sessions:/app/sessions
     depends_on:
@@ -44,7 +49,7 @@ services:
     command: celery -A worker.celery_app:celery_app worker -l info
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/autopost
+      DATABASE_URL: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/autopost
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
@@ -62,7 +67,7 @@ services:
     command: celery -A worker.celery_app:celery_app beat -l info
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/autopost
+      DATABASE_URL: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/autopost
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
@@ -75,7 +80,7 @@ services:
     command: python -m bot.main
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/autopost
+      DATABASE_URL: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/autopost
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2

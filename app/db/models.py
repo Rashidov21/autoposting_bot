@@ -32,7 +32,7 @@ class User(Base):
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     subscription_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    payment_status: Mapped[str] = mapped_column(String(32), default="none", index=True)
+    payment_status: Mapped[str] = mapped_column(String(32), nullable=False, default="none")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -42,25 +42,7 @@ class User(Base):
     campaigns: Mapped[list["Campaign"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     groups: Mapped[list["Group"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     proxies: Mapped[list["Proxy"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    payment_requests: Mapped[list["PaymentRequest"]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
-    )
-
-
-class PaymentRequest(Base):
-    __tablename__ = "payment_requests"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
-    tariff_months: Mapped[int] = mapped_column(Integer, nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
-    screenshot_file_id: Mapped[str] = mapped_column(String(512), nullable=False)
-    contact_phone: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    resolved_by_telegram_id: Mapped[Optional[int]] = mapped_column(BigInteger)
-
-    user: Mapped["User"] = relationship(back_populates="payment_requests")
+    payment_requests: Mapped[list["PaymentRequest"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class Proxy(Base):
@@ -196,3 +178,19 @@ class SystemSetting(Base):
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value_json: Mapped[Any] = mapped_column(JSONB)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PaymentRequest(Base):
+    __tablename__ = "payment_requests"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    tariff_months: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    screenshot_file_id: Mapped[Optional[str]] = mapped_column(String(255))
+    contact_phone: Mapped[Optional[str]] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    resolved_by_telegram_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+
+    user: Mapped["User"] = relationship(back_populates="payment_requests")

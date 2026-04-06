@@ -4,7 +4,7 @@ import random
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.db.models import Campaign, CampaignAccount, CampaignGroup, Group, Schedule, User
@@ -12,26 +12,6 @@ from app.db.models import Campaign, CampaignAccount, CampaignGroup, Group, Sched
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def pause_all_running_for_user(
-    db: Session, user_id: uuid.UUID, except_campaign_id: uuid.UUID | None = None
-) -> int:
-    """Barcha running kampaniyalarni paused qiladi. except_campaign_id berilsa, uni o'tkazib yuboradi."""
-    q = select(Campaign).where(Campaign.user_id == user_id, Campaign.status == "running")
-    if except_campaign_id is not None:
-        q = q.where(Campaign.id != except_campaign_id)
-    rows = list(db.execute(q).scalars().all())
-    for c in rows:
-        c.status = "paused"
-        db.add(c)
-    return len(rows)
-
-
-def get_running_campaign_for_user(db: Session, user_id: uuid.UUID) -> Campaign | None:
-    return db.execute(
-        select(Campaign).where(Campaign.user_id == user_id, Campaign.status == "running")
-    ).scalar_one_or_none()
 
 
 def ensure_groups_for_user(db: Session, user: User, telegram_chat_ids: list[int]) -> list[uuid.UUID]:
@@ -103,12 +83,25 @@ def set_campaign_accounts(db: Session, campaign: Campaign, account_ids: list[uui
 
 
 def start_campaign(db: Session, campaign: Campaign) -> tuple[Schedule, int]:
+    """Kampaniyani ishga tushiradi; boshqa ishlayotgan kampaniyalarni pauzaga qo'yadi. (schedule, pauzalar soni)."""
     if campaign.status == "running":
         s = db.execute(select(Schedule).where(Schedule.campaign_id == campaign.id)).scalar_one_or_none()
         if s:
             return s, 0
 
-    paused_n = pause_all_running_for_user(db, campaign.user_id, except_campaign_id=campaign.id)
+    paused_n = 0
+    others = list(
+        db.execute(
+            select(Campaign).where(
+                Campaign.user_id == campaign.user_id,
+                Campaign.status == "running",
+                Campaign.id != campaign.id,
+            )
+        ).scalars().all()
+    )
+    for oc in others:
+        stop_campaign(db, oc)
+        paused_n += 1
 
     campaign.status = "running"
     jitter = random.uniform(0, 90)
@@ -133,3 +126,10 @@ def stop_campaign(db: Session, campaign: Campaign) -> None:
 
 def list_user_campaigns(db: Session, user_id: uuid.UUID) -> list[Campaign]:
     return list(db.execute(select(Campaign).where(Campaign.user_id == user_id)).scalars().all())
+
+
+def delete_all_campaigns_for_user(db: Session, user: User) -> int:
+    """Bitta foydalanuvchi uchun barcha xabar (kampaniya) yozuvlarini o'chiradi."""
+    r = db.execute(delete(Campaign).where(Campaign.user_id == user.id))
+    db.flush()
+    return int(r.rowcount or 0)

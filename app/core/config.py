@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     internal_api_secret: str = "change-me"
     sessions_dir: Path = Path("./sessions")
 
+    # Admin Telegram ID lar (vergul bilan) — /admin panel
+    admin_telegram_ids: str = ""
+
+    # To'lov — foydalanuvchiga ko'rsatiladigan qo'shimcha matn (ixtiyoriy)
+    payment_instructions_text: str = ""
+
     # Telethon — ulanish va qayta urinish (production)
     telethon_connection_retries: int = Field(default=3, ge=1, le=10)
     telethon_retry_delay: int = Field(default=2, ge=1, le=30)
@@ -53,34 +59,28 @@ class Settings(BaseSettings):
     typing_simulation_probability: float = Field(default=0.82, ge=0.0, le=1.0)
     post_typing_pause_factor: float = Field(default=0.55, ge=0.2, le=1.0)
 
-    # Admin (Telegram user id lar, vergul bilan)
-    admin_telegram_ids: str = ""
-    # Tariflar (so'm, faqat ko'rsatish va mantiq uchun)
-    tariff_1_month_uzs: int = Field(default=0, ge=0)
-    tariff_6_month_uzs: int = Field(default=0, ge=0)
-    tariff_12_month_uzs: int = Field(default=0, ge=0)
-    payment_instructions_text: str = ""
-
     @property
-    def admin_telegram_id_set(self) -> set[int]:
-        if not self.admin_telegram_ids.strip():
-            return set()
-        out: set[int] = set()
-        for part in self.admin_telegram_ids.split(","):
-            p = part.strip()
-            if not p:
-                continue
-            try:
-                out.add(int(p))
-            except ValueError:
-                continue
-        return out
+    def admin_telegram_id_set(self) -> frozenset[int]:
+        return frozenset(parse_admin_telegram_ids(self.admin_telegram_ids))
 
     @property
     def telethon_api(self) -> tuple[int, str]:
         if not self.telegram_api_id or not self.telegram_api_hash:
             raise RuntimeError("TELEGRAM_API_ID va TELEGRAM_API_HASH ni sozlang")
         return self.telegram_api_id, self.telegram_api_hash
+
+
+def parse_admin_telegram_ids(raw: str) -> list[int]:
+    out: list[int] = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(int(part))
+        except ValueError:
+            continue
+    return out
 
 
 @lru_cache

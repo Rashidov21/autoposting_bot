@@ -39,10 +39,6 @@ celery_app.conf.beat_schedule = {
         "task": "worker.tasks.schedule_due_campaigns",
         "schedule": timedelta(seconds=30),
     },
-    "expire-subscriptions": {
-        "task": "worker.tasks.expire_subscriptions",
-        "schedule": timedelta(hours=1),
-    },
 }
 
 import worker.tasks  # noqa: E402,F401

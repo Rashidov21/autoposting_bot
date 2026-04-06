@@ -5,7 +5,7 @@ ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential libpq-dev \
+    build-essential libpq-dev tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

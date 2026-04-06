@@ -16,21 +16,6 @@ CREATE TABLE users (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX ix_users_telegram_id ON users (telegram_id);
-CREATE INDEX ix_users_payment_status ON users (payment_status);
-
-CREATE TABLE payment_requests (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    tariff_months INTEGER NOT NULL,
-    status VARCHAR(32) NOT NULL DEFAULT 'pending',
-    screenshot_file_id VARCHAR(512) NOT NULL,
-    contact_phone VARCHAR(32),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    resolved_at TIMESTAMPTZ,
-    resolved_by_telegram_id BIGINT
-);
-CREATE INDEX ix_payment_requests_status ON payment_requests (status);
-CREATE INDEX ix_payment_requests_user_id ON payment_requests (user_id);
 
 CREATE TABLE proxies (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -146,3 +131,17 @@ INSERT INTO system_settings (key, value_json) VALUES
   ('bot_enabled', 'true'::jsonb),
   ('maintenance_message', 'null'::jsonb)
 ON CONFLICT (key) DO NOTHING;
+
+CREATE TABLE payment_requests (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    tariff_months INTEGER NOT NULL DEFAULT 1,
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    screenshot_file_id VARCHAR(255),
+    contact_phone VARCHAR(64),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ,
+    resolved_by_telegram_id BIGINT
+);
+CREATE INDEX ix_payment_requests_status ON payment_requests (status);
+CREATE INDEX ix_payment_requests_user ON payment_requests (user_id);

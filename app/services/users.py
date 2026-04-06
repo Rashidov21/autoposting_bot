@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models import User
@@ -15,7 +15,7 @@ def upsert_user(db: Session, telegram_id: int, username: str | None, full_name: 
         u.username = username
         u.full_name = full_name
         return u
-    u = User(telegram_id=telegram_id, username=username, full_name=full_name)
+    u = User(telegram_id=telegram_id, username=username, full_name=full_name, payment_status="none")
     db.add(u)
     db.flush()
     return u
@@ -35,3 +35,19 @@ def block_user(db: Session, uid: uuid.UUID, blocked: bool) -> User | None:
         return None
     u.is_blocked = blocked
     return u
+
+
+def delete_user(db: Session, uid: uuid.UUID) -> bool:
+    u = db.get(User, uid)
+    if not u:
+        return False
+    db.delete(u)
+    return True
+
+
+def list_users_paginated(db: Session, offset: int, limit: int) -> tuple[list[User], int]:
+    total = db.scalar(select(func.count()).select_from(User)) or 0
+    rows = list(
+        db.execute(select(User).order_by(User.created_at.desc()).offset(offset).limit(limit)).scalars().all()
+    )
+    return rows, int(total)

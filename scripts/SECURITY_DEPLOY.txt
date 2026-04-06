@@ -1,0 +1,23 @@
+Xavfsizlik o'zgarishlari (docker-compose) — qisqa qo'llanma
+============================================================
+
+1) .env fayl
+   - .env.example dan nusxa oling: cp .env.example .env
+   - POSTGRES_PASSWORD ni productionda kuchli qiymatga almashtiring.
+   - DATABASE_URL ichidagi parol POSTGRES_PASSWORD bilan bir xil bo'lsin.
+
+2) Portlar
+   - PostgreSQL, Redis, API endi faqat 127.0.0.1 da ochiq.
+   - Tashqi dunyodan API kerak bo'lsa: nginx (80/443) -> proxy_pass http://127.0.0.1:8000;
+   - Oldin 8006 ishlatgan bo'lsangiz, docker-compose.yml da api ports qatorini
+     "127.0.0.1:8006:8000" qilib o'zgartiring.
+
+3) Mavjud PostgreSQL volume
+   - Parol allaqachon "postgres" bilan yaratilgan bo'lsa, POSTGRES_PASSWORD=postgres qoldiring
+     yoki psql da ALTER USER postgres WITH PASSWORD 'yangi'; qiling va .env ni moslang.
+
+4) FERNET_KEY ni o'zgartirmang — eski Telethon sessiyalar o'qilmay qoladi (qayta login).
+
+5) Ishga tushirish
+   docker compose down
+   docker compose up -d --build

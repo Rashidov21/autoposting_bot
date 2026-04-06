@@ -1,18 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
 
-from aiogram import Bot
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
-from app.core.config import get_settings
-from app.db.models import Campaign, Schedule, User
+from app.db.models import Campaign, Schedule
 from app.db.session import SessionLocal
-from app.services import campaigns as campaign_service
-from bot.messages import MSG_SUBSCRIPTION_EXPIRED
 from engine.sender import run_campaign_round_sync
 from worker.celery_app import celery_app
 
@@ -55,50 +50,6 @@ def process_campaign(campaign_id: str) -> None:
         db.close()
 
 
-@celery_app.task(name="worker.tasks.expire_subscriptions")
-def expire_subscriptions() -> None:
-    """Obunasi tugagan (yoki hech bo'lmagan) foydalanuvchilarning ishlayotgan kampaniyalarini to'xtatadi."""
-    now = datetime.now(timezone.utc)
-    settings = get_settings()
-    db = SessionLocal()
-    notify_ids: list[int] = []
-    try:
-        q = (
-            select(Campaign)
-            .join(User, User.id == Campaign.user_id)
-            .where(Campaign.status == "running")
-            .where(or_(User.subscription_ends_at.is_(None), User.subscription_ends_at <= now))
-        )
-        camps = list(db.execute(q).scalars().all())
-        seen_tg: set[int] = set()
-        for c in camps:
-            u = db.get(User, c.user_id)
-            campaign_service.stop_campaign(db, c)
-            if u and u.telegram_id not in seen_tg:
-                seen_tg.add(u.telegram_id)
-                notify_ids.append(u.telegram_id)
-        db.commit()
-    except Exception:
-        logger.exception("expire_subscriptions")
-        db.rollback()
-        return
-    finally:
-        db.close()
-
-    if not settings.bot_token or not notify_ids:
-        return
-
-    async def _notify() -> None:
-        async with Bot(settings.bot_token) as bot:
-            for tg_id in notify_ids:
-                try:
-                    await bot.send_message(tg_id, MSG_SUBSCRIPTION_EXPIRED)
-                except Exception:
-                    logger.info("expire notify failed for %s", tg_id)
-
-    asyncio.run(_notify())
-
-
 @celery_app.task(name="worker.tasks.send_login_code_task")
 def send_login_code_task(account_id: str, phone: str) -> None:
     import asyncio
@@ -114,6 +65,26 @@ def send_login_code_task(account_id: str, phone: str) -> None:
             return
         proxy = db.get(Proxy, acc.proxy_id) if acc.proxy_id else None
         asyncio.run(send_login_code(acc, proxy, phone))
+    finally:
+        db.close()
+
+
+@celery_app.task(name="worker.tasks.sync_group_titles_task")
+def sync_group_titles_task(group_ids: list[str]) -> None:
+    """Guruh chat ID lariga Telethon orqali nom/username yozadi."""
+    import asyncio
+
+    from engine.group_meta import sync_groups_titles_for_ids
+
+    gids = [uuid.UUID(x) for x in group_ids]
+    db = SessionLocal()
+    try:
+        asyncio.run(sync_groups_titles_for_ids(db, gids))
+        db.commit()
+    except Exception:
+        logger.exception("sync_group_titles_task")
+        db.rollback()
+        raise
     finally:
         db.close()
 

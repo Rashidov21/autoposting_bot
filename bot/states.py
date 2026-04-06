@@ -1,9 +1,4 @@
-from aiogram.fsm.state import State, StatesGroup
-
-
-class PaymentStates(StatesGroup):
-    waiting_phone = State()
-    waiting_screenshot = State()
+﻿from aiogram.fsm.state import State, StatesGroup
 
 
 class CampaignStates(StatesGroup):
@@ -20,3 +15,8 @@ class LoginStates(StatesGroup):
 
 class AdminStates(StatesGroup):
     waiting_video = State()
+
+
+class PaymentStates(StatesGroup):
+    waiting_phone = State()
+    waiting_screenshot = State()

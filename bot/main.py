@@ -7,6 +7,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.core.config import get_settings
+from bot.admin_handlers import router as admin_router
 from bot.handlers import router
 from bot.middlewares import AccessMiddleware
 
@@ -19,9 +20,9 @@ async def main() -> None:
         raise RuntimeError("BOT_TOKEN sozlanmagan")
     bot = Bot(settings.bot_token)
     dp = Dispatcher(storage=MemoryStorage())
-    mw = AccessMiddleware()
-    dp.message.middleware(mw)
-    dp.callback_query.middleware(mw)
+    dp.message.middleware(AccessMiddleware())
+    dp.callback_query.middleware(AccessMiddleware())
+    dp.include_router(admin_router)
     dp.include_router(router)
     await dp.start_polling(bot)
 
