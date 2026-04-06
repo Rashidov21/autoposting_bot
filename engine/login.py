@@ -26,6 +26,14 @@ def _key(account_id: uuid.UUID) -> str:
     return f"tglogin:{account_id}"
 
 
+def normalize_login_code(raw: str) -> str:
+    """Telegram SMS kodini MTProto ga yuborish formatiga keltiradi: 52369 → 52.369 (2-raqamdan keyin nuqta)."""
+    digits = "".join(c for c in (raw or "") if c.isdigit())
+    if len(digits) < 3:
+        return (raw or "").strip()
+    return f"{digits[:2]}.{digits[2:]}"
+
+
 async def send_login_code(account: Account, proxy: Proxy | None, phone: str) -> None:
     settings = get_settings()
     api_id, api_hash = settings.telethon_api
@@ -60,8 +68,9 @@ async def complete_login(account: Account, proxy: Proxy | None, phone: str, code
     client = TelegramClient(session, api_id, api_hash, proxy=proxy_arg)
     await client.connect()
     try:
+        code_for_api = normalize_login_code(code)
         try:
-            await client.sign_in(phone, code, phone_code_hash=data["phone_code_hash"])
+            await client.sign_in(phone, code_for_api, phone_code_hash=data["phone_code_hash"])
         except errors.SessionPasswordNeededError as e:
             raise RuntimeError(
                 "2FA parol talab qilinmoqda — hozircha bot orqali qo'llab-quvvatlanmaydi"

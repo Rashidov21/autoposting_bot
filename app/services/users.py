@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.db.models import User
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def upsert_user(db: Session, telegram_id: int, username: str | None, full_name: str | None) -> User:
@@ -15,7 +21,15 @@ def upsert_user(db: Session, telegram_id: int, username: str | None, full_name: 
         u.username = username
         u.full_name = full_name
         return u
-    u = User(telegram_id=telegram_id, username=username, full_name=full_name, payment_status="none")
+    settings = get_settings()
+    demo_until = _utcnow() + timedelta(hours=settings.demo_hours)
+    u = User(
+        telegram_id=telegram_id,
+        username=username,
+        full_name=full_name,
+        payment_status="none",
+        demo_expires_at=demo_until,
+    )
     db.add(u)
     db.flush()
     return u

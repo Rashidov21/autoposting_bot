@@ -7,6 +7,7 @@ BTN_TARIFF = "💳 Tarif va to'lov"
 BTN_CAMPAIGN = "📢 Xabar"
 BTN_STATUS = "📊 Holat"
 BTN_STOP = "⏹ To'xtatish"
+BTN_RESUME = "▶️ Ishga tushirish"
 BTN_VIDEO = "🎬 Qo'llanma"
 BTN_ACCOUNT = "👤 Akkaunt ulash"
 BTN_HELP = "❓ Yordam"
@@ -35,6 +36,7 @@ MAIN_MENU_TEXTS: frozenset[str] = frozenset(
         BTN_CAMPAIGN,
         BTN_STATUS,
         BTN_STOP,
+        BTN_RESUME,
         BTN_VIDEO,
         BTN_ACCOUNT,
         BTN_HELP,
@@ -58,6 +60,7 @@ MSG_HELP = (
     "📢 Xabar — matn, guruhlar va interval (yangi yoki mavjudni tahrirlash).\n"
     "📊 Holat — keyingi yuborish vaqti va statistika.\n"
     "⏹ To'xtatish — barcha yuborishlarni vaqtincha to'xtatish.\n"
+    "▶️ Ishga tushirish — barcha yuborishlar to'xtatilgan bo'lsa, oxirgi tanlangan xabarni qayta ishga tushirish.\n"
     "🎬 Qo'llanma — video (faqat shaxsiy chatda; admin sozlasagina).\n"
     "👤 Akkaunt ulash — Telethon akkauntni ulash.\n\n"
     "🔁 Pastdagi tugmalar — boshqa bo'limga o'tish.\n"

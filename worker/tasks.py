@@ -69,6 +69,67 @@ def send_login_code_task(account_id: str, phone: str) -> None:
         db.close()
 
 
+@celery_app.task(name="worker.tasks.purge_expired_demo_users_task")
+def purge_expired_demo_users_task() -> int:
+    """Demo tugagan, obuna yo'q foydalanuvchilarni DB dan olib tashlaydi."""
+    from app.services import subscription as subscription_service
+
+    db = SessionLocal()
+    try:
+        n = subscription_service.purge_expired_demo_users(db)
+        db.commit()
+        if n:
+            logger.info("purge_expired_demo_users_task deleted=%s", n)
+        return n
+    except Exception:
+        logger.exception("purge_expired_demo_users_task")
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(name="worker.tasks.subscription_reminder_task")
+def subscription_reminder_task() -> None:
+    """Obunasi 3 kun va 1 kun qoldiqda eslatma (kuniga bir marta)."""
+    from app.services.telegram_notify import send_telegram_text_sync
+    from app.services import subscription as subscription_service
+
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    db = SessionLocal()
+    try:
+        users = subscription_service.list_users_needing_subscription_reminders(db)
+        for u in users:
+            se = u.subscription_ends_at
+            if not se:
+                continue
+            if se.tzinfo is None:
+                se = se.replace(tzinfo=timezone.utc)
+            d_left = (se.date() - today).days
+            if d_left == 3 and not u.sub_reminder_3d_sent:
+                send_telegram_text_sync(
+                    u.telegram_id,
+                    "📅 Obunangiz 3 kun ichida tugaydi. «💳 Tarif va to'lov» orqali uzaytiring.",
+                )
+                u.sub_reminder_3d_sent = True
+                db.add(u)
+            elif d_left == 1 and not u.sub_reminder_1d_sent:
+                send_telegram_text_sync(
+                    u.telegram_id,
+                    "⚠️ Ertaga obuna tugaydi. «💳 Tarif va to'lov» orqali yangilang.",
+                )
+                u.sub_reminder_1d_sent = True
+                db.add(u)
+        db.commit()
+    except Exception:
+        logger.exception("subscription_reminder_task")
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 @celery_app.task(name="worker.tasks.sync_group_titles_task")
 def sync_group_titles_task(group_ids: list[str]) -> None:
     """Guruh chat ID lariga Telethon orqali nom/username yozadi."""

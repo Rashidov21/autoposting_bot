@@ -15,15 +15,17 @@ from app.db.session import SessionLocal
 from app.services import campaigns as campaign_service
 from app.services import users as user_service
 from bot.handlers.user import (
+    execute_resume_answer,
     execute_stop_answer,
     send_campaign_status,
     send_tutorial_video_message,
 )
-from bot.keyboards import groups_inline_kb, intervals_kb, main_menu
+from bot.keyboards import groups_inline_kb, intervals_kb, reply_main_menu
 from bot.messages import (
     BTN_CAMPAIGN,
     BTN_CANCEL,
     BTN_HELP,
+    BTN_RESUME,
     BTN_STATUS,
     BTN_STOP,
     BTN_TARIFF,
@@ -81,6 +83,14 @@ def _parse_interval(text: str) -> int | None:
     return v if v in (3, 5, 10, 15) else None
 
 
+def _format_group_label(g: Group) -> str:
+    tid = g.telegram_chat_id
+    title = (g.title or "").strip()
+    if title:
+        return f"{title[:50]} · {tid}"
+    return f"Guruh {tid}"
+
+
 def _group_rows(
     groups: list[Group],
     selected: set[str],
@@ -88,7 +98,7 @@ def _group_rows(
     rows: list[tuple[str, str, bool]] = []
     for g in groups:
         gid = str(g.id)
-        label = (g.title or str(g.telegram_chat_id))[:60]
+        label = _format_group_label(g)[:62]
         rows.append((gid, label, gid in selected))
     return rows
 
@@ -105,6 +115,11 @@ async def _send_groups_prompt(message: Message, state: FSMContext, user_id: uuid
         )
     finally:
         db.close()
+    missing_titles = [str(g.id) for g in groups if not (g.title or "").strip()]
+    if missing_titles:
+        from worker.tasks import sync_group_titles_task
+
+        sync_group_titles_task.delay(missing_titles)
     data = await state.get_data()
     sel = set(data.get("selected_group_ids") or [])
     rows = _group_rows(groups, sel)
@@ -124,7 +139,7 @@ async def _fsm_main_menu_switch(message: Message, state: FSMContext) -> bool:
     if t == BTN_HELP:
         from bot.messages import MSG_HELP
 
-        await message.answer(MSG_HELP, reply_markup=main_menu(message.from_user.id))
+        await message.answer(MSG_HELP, reply_markup=reply_main_menu(message.from_user.id))
         return True
     if t == BTN_STATUS:
         await send_campaign_status(message, message.from_user.id)
@@ -132,19 +147,22 @@ async def _fsm_main_menu_switch(message: Message, state: FSMContext) -> bool:
     if t == BTN_STOP:
         await execute_stop_answer(message)
         return True
+    if t == BTN_RESUME:
+        await execute_resume_answer(message)
+        return True
     if t == BTN_CAMPAIGN:
         await message.answer(
             "📢 Xabar bo'limi: pastdagi tugmani qayta bosing yoki «Bekor qilish».",
-            reply_markup=main_menu(message.from_user.id),
+            reply_markup=reply_main_menu(message.from_user.id),
         )
         return True
     if t == BTN_TARIFF:
         await message.answer(
             "💳 Tarif: «Tarif va to'lov» tugmasini qayta bosing.",
-            reply_markup=main_menu(message.from_user.id),
+            reply_markup=reply_main_menu(message.from_user.id),
         )
         return True
-    await message.answer(MSG_FSM_SWITCH_MENU, reply_markup=main_menu(message.from_user.id))
+    await message.answer(MSG_FSM_SWITCH_MENU, reply_markup=reply_main_menu(message.from_user.id))
     return True
 
 
@@ -165,7 +183,7 @@ async def xabar_entry(message: Message, state: FSMContext) -> None:
         await state.set_state(CampaignStates.message_text)
         await message.answer(
             MSG_CAMPAIGN_PROMPT_TEXT,
-            reply_markup=main_menu(message.from_user.id),
+            reply_markup=reply_main_menu(message.from_user.id),
         )
         return
 
@@ -206,7 +224,7 @@ async def xab_txt_start(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(edit_campaign_id=str(cid))
     await callback.message.answer(
         MSG_XABAR_EDIT_TEXT_PROMPT,
-        reply_markup=main_menu(callback.from_user.id),
+        reply_markup=reply_main_menu(callback.from_user.id),
     )
     await callback.answer()
 
@@ -292,7 +310,7 @@ async def xab_new_start(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(CampaignStates.message_text)
     await callback.message.answer(
         MSG_CAMPAIGN_PROMPT_TEXT,
-        reply_markup=main_menu(callback.from_user.id),
+        reply_markup=reply_main_menu(callback.from_user.id),
     )
     await callback.answer()
 
@@ -302,7 +320,7 @@ async def xab_home(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.message.answer(
         "🏠 Bosh menyu.",
-        reply_markup=main_menu(callback.from_user.id),
+        reply_markup=reply_main_menu(callback.from_user.id),
     )
     await callback.answer()
 
@@ -313,7 +331,7 @@ async def save_edited_text(message: Message, state: FSMContext) -> None:
         return
     if message.text == BTN_CANCEL:
         await state.clear()
-        await message.answer("Bekor qilindi.", reply_markup=main_menu(message.from_user.id))
+        await message.answer("Bekor qilindi.", reply_markup=reply_main_menu(message.from_user.id))
         return
     data = await state.get_data()
     raw = data.get("edit_campaign_id")
@@ -346,7 +364,7 @@ async def save_edited_text(message: Message, state: FSMContext) -> None:
     finally:
         db.close()
     await state.clear()
-    await message.answer(MSG_XABAR_EDIT_TEXT_DONE, reply_markup=main_menu(message.from_user.id))
+    await message.answer(MSG_XABAR_EDIT_TEXT_DONE, reply_markup=reply_main_menu(message.from_user.id))
 
 
 @router.message(CampaignStates.editing_interval, F.text)
@@ -355,7 +373,7 @@ async def save_edited_interval(message: Message, state: FSMContext) -> None:
         return
     if message.text == BTN_CANCEL:
         await state.clear()
-        await message.answer("Bekor qilindi.", reply_markup=main_menu(message.from_user.id))
+        await message.answer("Bekor qilindi.", reply_markup=reply_main_menu(message.from_user.id))
         return
     iv = _parse_interval(message.text or "")
     if iv is None:
@@ -392,7 +410,7 @@ async def save_edited_interval(message: Message, state: FSMContext) -> None:
     finally:
         db.close()
     await state.clear()
-    await message.answer(MSG_XABAR_EDIT_INTERVAL_DONE, reply_markup=main_menu(message.from_user.id))
+    await message.answer(MSG_XABAR_EDIT_INTERVAL_DONE, reply_markup=reply_main_menu(message.from_user.id))
 
 
 @router.message(CampaignStates.message_text, F.text)
@@ -401,7 +419,7 @@ async def campaign_message(message: Message, state: FSMContext) -> None:
         return
     if message.text == BTN_CANCEL:
         await state.clear()
-        await message.answer("Bekor qilindi.", reply_markup=main_menu(message.from_user.id))
+        await message.answer("Bekor qilindi.", reply_markup=reply_main_menu(message.from_user.id))
         return
     await state.update_data(message_text=message.text.strip())
     await state.set_state(CampaignStates.select_groups)
@@ -417,6 +435,57 @@ async def campaign_message(message: Message, state: FSMContext) -> None:
     finally:
         db.close()
     await _send_groups_prompt(message, state, uid)
+
+
+@router.callback_query(StateFilter(CampaignStates.select_groups), F.data.startswith("grp:del:"))
+async def grp_delete(callback: CallbackQuery, state: FSMContext) -> None:
+    raw = (callback.data or "").replace("grp:del:", "", 1)
+    try:
+        gid_u = uuid.UUID(raw)
+    except ValueError:
+        await callback.answer("Xato")
+        return
+    db = SessionLocal()
+    try:
+        u = user_service.get_by_telegram_id(db, callback.from_user.id)
+        if not u:
+            await callback.answer("/start")
+            return
+        if not campaign_service.delete_user_group(db, u, gid_u):
+            await callback.answer("Topilmadi", show_alert=True)
+            return
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        await callback.answer(str(e)[:120], show_alert=True)
+        return
+    finally:
+        db.close()
+
+    data = await state.get_data()
+    sel = set(data.get("selected_group_ids") or [])
+    sel.discard(str(gid_u))
+    await state.update_data(selected_group_ids=list(sel))
+
+    db = SessionLocal()
+    try:
+        u = user_service.get_by_telegram_id(db, callback.from_user.id)
+        if not u:
+            await callback.answer("O'chirildi")
+            return
+        groups = list(
+            db.execute(
+                select(Group).where(Group.user_id == u.id).order_by(Group.created_at.desc())
+            )
+            .scalars()
+            .all()
+        )
+    finally:
+        db.close()
+    rows = _group_rows(groups, sel)
+    text = MSG_GROUPS_SELECT if groups else MSG_GROUPS_EMPTY
+    await callback.message.edit_text(text, reply_markup=groups_inline_kb(rows))
+    await callback.answer("O'chirildi")
 
 
 @router.callback_query(StateFilter(CampaignStates.select_groups), F.data.startswith("grp:tog:"))
@@ -460,7 +529,7 @@ async def grp_toggle(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(StateFilter(CampaignStates.select_groups), F.data == "grp:add")
 async def grp_add(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(CampaignStates.enter_group_chat_id)
-    await callback.message.answer(MSG_ENTER_GROUP_CHAT_ID, reply_markup=main_menu(callback.from_user.id))
+    await callback.message.answer(MSG_ENTER_GROUP_CHAT_ID, reply_markup=reply_main_menu(callback.from_user.id))
     await callback.answer()
 
 
@@ -471,10 +540,10 @@ async def grp_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     if data.get("editing_campaign_id"):
         await callback.message.answer(
             "Guruhlar tahriri bekor qilindi.",
-            reply_markup=main_menu(callback.from_user.id),
+            reply_markup=reply_main_menu(callback.from_user.id),
         )
     else:
-        await callback.message.answer("Bekor qilindi.", reply_markup=main_menu(callback.from_user.id))
+        await callback.message.answer("Bekor qilindi.", reply_markup=reply_main_menu(callback.from_user.id))
     await callback.answer()
 
 
@@ -514,7 +583,7 @@ async def grp_done(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
         await callback.message.answer(
             MSG_XABAR_EDIT_GROUPS_DONE,
-            reply_markup=main_menu(callback.from_user.id),
+            reply_markup=reply_main_menu(callback.from_user.id),
         )
         await callback.answer()
         return
@@ -530,7 +599,7 @@ async def grp_chat_id_enter(message: Message, state: FSMContext) -> None:
         return
     if message.text == BTN_CANCEL:
         await state.clear()
-        await message.answer("Bekor qilindi.", reply_markup=main_menu(message.from_user.id))
+        await message.answer("Bekor qilindi.", reply_markup=reply_main_menu(message.from_user.id))
         return
     try:
         cid = int(message.text.strip())
@@ -576,7 +645,7 @@ async def campaign_interval(message: Message, state: FSMContext) -> None:
         return
     if message.text == BTN_CANCEL:
         await state.clear()
-        await message.answer("Bekor qilindi.", reply_markup=main_menu(message.from_user.id))
+        await message.answer("Bekor qilindi.", reply_markup=reply_main_menu(message.from_user.id))
         return
     iv = _parse_interval(message.text or "")
     if iv is None:
@@ -593,7 +662,7 @@ async def campaign_interval(message: Message, state: FSMContext) -> None:
             return
         gids = [uuid.UUID(x) for x in (data.get("selected_group_ids") or [])]
         if not gids:
-            await message.answer("Guruh tanlanmagan.", reply_markup=main_menu(message.from_user.id))
+            await message.answer("Guruh tanlanmagan.", reply_markup=reply_main_menu(message.from_user.id))
             return
         c = campaign_service.create_campaign(
             db,
@@ -612,11 +681,11 @@ async def campaign_interval(message: Message, state: FSMContext) -> None:
             f"{MSG_CAMPAIGN_STARTED}{extra}\n\n"
             f"ID: `{c.id}`\nKeyingi ish: {s.next_run_at.isoformat()}",
             parse_mode="Markdown",
-            reply_markup=main_menu(message.from_user.id),
+            reply_markup=reply_main_menu(message.from_user.id),
         )
     except Exception as e:
         db.rollback()
-        await message.answer(f"Xato: {e}", reply_markup=main_menu(message.from_user.id))
+        await message.answer(f"Xato: {e}", reply_markup=reply_main_menu(message.from_user.id))
     finally:
         db.close()
 

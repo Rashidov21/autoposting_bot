@@ -169,6 +169,16 @@ def stop_campaign(db: Session, campaign: Campaign) -> None:
     db.add(campaign)
 
 
+def delete_user_group(db: Session, user: User, group_id: uuid.UUID) -> bool:
+    """Foydalanuvchining guruh yozuvini o'chiradi; campaign_groups jadvalidagi bog'lanishlar CASCADE bilan yo'qoladi."""
+    g = db.get(Group, group_id)
+    if not g or g.user_id != user.id:
+        return False
+    db.delete(g)
+    db.flush()
+    return True
+
+
 def list_user_campaigns(db: Session, user_id: uuid.UUID) -> list[Campaign]:
     return list(db.execute(select(Campaign).where(Campaign.user_id == user_id)).scalars().all())
 

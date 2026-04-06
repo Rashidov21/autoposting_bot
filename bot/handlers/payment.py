@@ -10,9 +10,10 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from app.core.config import get_settings
 from app.db.session import SessionLocal
+from app.services.payment_text import build_payment_instruction_html
 from app.services import subscription as subscription_service
 from app.services import users as user_service
-from bot.keyboards import main_menu, phone_share_kb, tariff_inline_kb
+from bot.keyboards import reply_main_menu, phone_share_kb, tariff_inline_kb
 from bot.messages import (
     BTN_CANCEL,
     BTN_TARIFF,
@@ -26,6 +27,20 @@ from bot.messages import (
 from bot.states import PaymentStates
 
 router = Router(name="payment")
+
+
+def _tariff_intro_text() -> str:
+    s = get_settings()
+
+    def p(n: int) -> str:
+        return f"{n:,}".replace(",", " ")
+
+    return (
+        f"{MSG_TARIFF_MENU}\n\n"
+        f"• 1 oy — {p(s.tariff_1_month_uzs)} so'm\n"
+        f"• 6 oy — {p(s.tariff_6_month_uzs)} so'm\n"
+        f"• 12 oy — {p(s.tariff_12_month_uzs)} so'm"
+    )
 
 
 def _valid_phone(raw: str) -> bool:
@@ -79,7 +94,7 @@ async def _notify_admins_payment(
 @router.message(F.text == BTN_TARIFF)
 async def open_tariff(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer(MSG_TARIFF_MENU, reply_markup=tariff_inline_kb())
+    await message.answer(_tariff_intro_text(), reply_markup=tariff_inline_kb())
 
 
 @router.callback_query(F.data.startswith("tariff:"))
@@ -96,10 +111,8 @@ async def tariff_chosen(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(tariff_months=months)
     await state.set_state(PaymentStates.waiting_phone)
     settings = get_settings()
-    instr = (settings.payment_instructions_text or "").strip()
-    body = html.escape(MSG_PAYMENT_PHONE_PROMPT)
-    if instr:
-        body = f"<b>To'lov ko'rsatmalari:</b>\n{html.escape(instr)}\n\n{body}"
+    pay_block = build_payment_instruction_html(settings, months)
+    body = f"{pay_block}\n\n{html.escape(MSG_PAYMENT_PHONE_PROMPT)}"
     await callback.message.answer(
         body,
         parse_mode="HTML",
@@ -111,7 +124,7 @@ async def tariff_chosen(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "cancel_tariff")
 async def cancel_tariff(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await callback.message.answer("Bekor qilindi.", reply_markup=main_menu(callback.from_user.id))
+    await callback.message.answer("Bekor qilindi.", reply_markup=reply_main_menu(callback.from_user.id))
     await callback.answer()
 
 
@@ -132,7 +145,7 @@ async def payment_phone_contact(message: Message, state: FSMContext) -> None:
 async def payment_phone_text(message: Message, state: FSMContext) -> None:
     if message.text == BTN_CANCEL:
         await state.clear()
-        await message.answer("Bekor qilindi.", reply_markup=main_menu(message.from_user.id))
+        await message.answer("Bekor qilindi.", reply_markup=reply_main_menu(message.from_user.id))
         return
     if not _valid_phone(message.text or ""):
         await message.answer(MSG_PAYMENT_PHONE_INVALID)
@@ -171,7 +184,7 @@ async def payment_screenshot(message: Message, state: FSMContext) -> None:
         db.close()
 
     await state.clear()
-    await message.answer(MSG_PAYMENT_SUBMITTED, reply_markup=main_menu(message.from_user.id))
+    await message.answer(MSG_PAYMENT_SUBMITTED, reply_markup=reply_main_menu(message.from_user.id))
     await _notify_admins_payment(
         message.bot,
         pr_id,
@@ -188,7 +201,7 @@ async def payment_screenshot(message: Message, state: FSMContext) -> None:
 async def payment_screenshot_expect_photo(message: Message, state: FSMContext) -> None:
     if message.text == BTN_CANCEL:
         await state.clear()
-        await message.answer("Bekor qilindi.", reply_markup=main_menu(message.from_user.id))
+        await message.answer("Bekor qilindi.", reply_markup=reply_main_menu(message.from_user.id))
         return
     await message.answer("Iltimos, to'lov skrinshotini rasm sifatida yuboring.")
 

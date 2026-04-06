@@ -12,19 +12,23 @@ from sqlalchemy import select
 
 from app.analytics.stats import campaign_totals
 from app.core.admin import is_admin
+from app.core.config import get_settings
 from app.db.models import Campaign, Schedule
 from app.db.session import SessionLocal
 from app.services import campaigns as campaign_service
 from app.services import users as user_service
 from app.services.subscription import is_subscription_active
 from app.services import system as system_service
-from bot.keyboards import after_stop_inline_kb, main_menu
+from bot.keyboards import after_stop_inline_kb, main_menu, reply_main_menu
 from bot.messages import (
     BTN_CAMPAIGN,
     BTN_HELP,
+    BTN_RESUME,
     BTN_STATUS,
     BTN_STOP,
+    BTN_TARIFF,
     BTN_VIDEO,
+    MSG_CAMPAIGN_OLD_PAUSED,
     MSG_CAMPAIGN_PROMPT_TEXT,
     MSG_HELP,
     MSG_PAYMENT_NEED_PHONE_FIRST,
@@ -122,7 +126,8 @@ async def send_campaign_status(message: Message, telegram_id: int) -> None:
         camps = campaign_service.list_user_campaigns(db, u.id)
         if not camps:
             await message.answer(
-                f"Hozircha saqlangan xabar yo'q. «{BTN_CAMPAIGN}» orqali boshlang."
+                f"Hozircha saqlangan xabar yo'q. «{BTN_CAMPAIGN}» orqali boshlang.",
+                reply_markup=reply_main_menu(telegram_id),
             )
             return
         header = f"📊 Xabarlar: {len(camps)} ta\n⏱ Vaqt: Oʻzbekiston\n"
@@ -157,6 +162,7 @@ async def send_campaign_status(message: Message, telegram_id: int) -> None:
                 )
         text = header + "\n\n".join(blocks)
         await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await message.answer("\u200b", reply_markup=main_menu(telegram_id, db))
     finally:
         db.close()
 
@@ -183,12 +189,17 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         db.commit()
     finally:
         db.close()
-    await message.answer(MSG_WELCOME, reply_markup=main_menu(message.from_user.id))
+    demo_h = get_settings().demo_hours
+    await message.answer(
+        f"{MSG_WELCOME}\n\n"
+        f"⏱ Demo: {demo_h} soat bepul sinab ko'rish. Keyin «{BTN_TARIFF}» orqali obuna.",
+        reply_markup=reply_main_menu(message.from_user.id),
+    )
 
 
 @router.message(F.text == BTN_HELP)
 async def help_cmd(message: Message) -> None:
-    await message.answer(MSG_HELP, reply_markup=main_menu(message.from_user.id))
+    await message.answer(MSG_HELP, reply_markup=reply_main_menu(message.from_user.id))
 
 
 @router.message(F.text == BTN_STATUS)
@@ -214,10 +225,9 @@ async def execute_stop_answer(message: Message) -> None:
         body = MSG_STOP_DONE.format(n=n)
         if n > 0:
             body += "\n\n" + MSG_STOP_NEXT_HINT
-        await message.answer(
-            body,
-            reply_markup=after_stop_inline_kb() if n > 0 else main_menu(message.from_user.id),
-        )
+        await message.answer(body, reply_markup=main_menu(message.from_user.id, db))
+        if n > 0:
+            await message.answer("👇 Tez kirish:", reply_markup=after_stop_inline_kb())
     finally:
         db.close()
 
@@ -227,13 +237,61 @@ async def stop_cmd(message: Message) -> None:
     await execute_stop_answer(message)
 
 
+async def execute_resume_answer(message: Message) -> None:
+    """To'xtatilgan xabarlardan birini (eng oxirgi yangilangan) ishga tushirish."""
+    db = SessionLocal()
+    try:
+        u = user_service.get_by_telegram_id(db, message.from_user.id)
+        if not u:
+            await message.answer("/start")
+            return
+        paused = list(
+            db.execute(select(Campaign).where(Campaign.user_id == u.id, Campaign.status == "paused")).scalars().all()
+        )
+        if not paused:
+            await message.answer(
+                "To'xtatilgan xabar yo'q.",
+                reply_markup=reply_main_menu(message.from_user.id),
+            )
+            return
+        paused.sort(key=lambda c: c.updated_at, reverse=True)
+        c = paused[0]
+        try:
+            s, paused_n = campaign_service.start_campaign(db, c)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            await message.answer(f"Xato: {e}", reply_markup=reply_main_menu(message.from_user.id))
+            return
+        extra = ""
+        if paused_n > 0:
+            extra = "\n\n" + MSG_CAMPAIGN_OLD_PAUSED
+        nxt = ""
+        if s and s.next_run_at:
+            dt = s.next_run_at
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            nxt = "\n\nKeyingi: " + dt.astimezone(_UZ_TZ).strftime("%d.%m.%Y %H:%M") + " (Oʻzbekiston)"
+        await message.answer(
+            f"▶️ Ishga tushdi.{extra}{nxt}",
+            reply_markup=reply_main_menu(message.from_user.id),
+        )
+    finally:
+        db.close()
+
+
+@router.message(F.text == BTN_RESUME)
+async def resume_cmd(message: Message) -> None:
+    await execute_resume_answer(message)
+
+
 @router.callback_query(F.data == "nav:campaign")
 async def nav_campaign(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.set_state(CampaignStates.message_text)
     await callback.message.answer(
         MSG_CAMPAIGN_PROMPT_TEXT,
-        reply_markup=main_menu(callback.from_user.id),
+        reply_markup=reply_main_menu(callback.from_user.id),
     )
 
 

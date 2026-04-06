@@ -296,15 +296,22 @@ async def admin_video_prompt(callback: CallbackQuery, state: FSMContext) -> None
     await callback.answer()
 
 
-@router.message(StateFilter(AdminStates.waiting_video), F.video | F.document)
+@router.message(
+    StateFilter(AdminStates.waiting_video),
+    F.video | F.video_note | F.animation | F.document,
+)
 async def admin_video_save(message: Message, state: FSMContext) -> None:
     fid = None
     if message.video:
         fid = message.video.file_id
+    elif message.video_note:
+        fid = message.video_note.file_id
+    elif message.animation:
+        fid = message.animation.file_id
     elif message.document and message.document.mime_type and message.document.mime_type.startswith("video"):
         fid = message.document.file_id
     if not fid:
-        await message.answer("Video fayl yuboring.")
+        await message.answer("Video yoki video hujjat yuboring (GIF ham bo'lishi mumkin).")
         return
     db = SessionLocal()
     try:
@@ -313,7 +320,10 @@ async def admin_video_save(message: Message, state: FSMContext) -> None:
     finally:
         db.close()
     await state.clear()
-    await message.answer(MSG_VIDEO_SAVED, reply_markup=_admin_home_kb())
+    await message.answer(
+        f"{MSG_VIDEO_SAVED}\n\n✅ Video qabul qilindi va saqlandi. Foydalanuvchilar «Qo'llanma» orqali ko'radi.",
+        reply_markup=_admin_home_kb(),
+    )
 
 
 @router.message(StateFilter(AdminStates.waiting_video), F.text)

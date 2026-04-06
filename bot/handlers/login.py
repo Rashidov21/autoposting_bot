@@ -7,7 +7,7 @@ from aiogram.types import Message
 from app.db.models import Account
 from app.db.session import SessionLocal
 from app.services import users as user_service
-from bot.keyboards import main_menu
+from bot.keyboards import reply_main_menu
 from bot.messages import BTN_ACCOUNT
 from bot.states import LoginStates
 
@@ -50,7 +50,9 @@ async def login_phone(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     send_login_code_task.delay(data["account_id"], phone)
     await state.set_state(LoginStates.code)
-    await message.answer("Telegramdan kelgan kodni yuboring.")
+    await message.answer(
+        "Telegramdan kelgan kodni yuboring (masalan 52369 yoki 52.369 — ikkalasi ham qabul qilinadi)."
+    )
 
 
 @router.message(LoginStates.code, F.text)
@@ -69,5 +71,5 @@ async def login_code(message: Message, state: FSMContext) -> None:
     complete_login_task.delay(acc_id, phone, code)
     await message.answer(
         "Kod qabul qilindi. Bir necha soniyadan keyin akkaunt faollashadi.",
-        reply_markup=main_menu(message.from_user.id),
+        reply_markup=reply_main_menu(message.from_user.id),
     )

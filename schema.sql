@@ -11,6 +11,9 @@ CREATE TABLE users (
     is_blocked BOOLEAN NOT NULL DEFAULT FALSE,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     subscription_ends_at TIMESTAMPTZ,
+    demo_expires_at TIMESTAMPTZ,
+    sub_reminder_3d_sent BOOLEAN NOT NULL DEFAULT FALSE,
+    sub_reminder_1d_sent BOOLEAN NOT NULL DEFAULT FALSE,
     payment_status VARCHAR(32) NOT NULL DEFAULT 'none',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from celery import Celery
+from celery.schedules import crontab
 
 from app.core.config import get_settings
 
@@ -38,6 +39,14 @@ celery_app.conf.beat_schedule = {
     "schedule-due-campaigns": {
         "task": "worker.tasks.schedule_due_campaigns",
         "schedule": timedelta(seconds=30),
+    },
+    "purge-expired-demo-users": {
+        "task": "worker.tasks.purge_expired_demo_users_task",
+        "schedule": timedelta(hours=1),
+    },
+    "subscription-reminders": {
+        "task": "worker.tasks.subscription_reminder_task",
+        "schedule": crontab(hour=8, minute=0),
     },
 }
 

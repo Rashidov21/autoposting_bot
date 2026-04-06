@@ -44,6 +44,17 @@ class Settings(BaseSettings):
     # To'lov — foydalanuvchiga ko'rsatiladigan qo'shimcha matn (ixtiyoriy)
     payment_instructions_text: str = ""
 
+    # Demo — yangi foydalanuvchi uchun bepul muddat (soat)
+    demo_hours: int = Field(default=24, ge=1, le=720)
+
+    # Tarif summalari (so'm) — .env da
+    tariff_1_month_uzs: int = Field(default=25_000, ge=0)
+    tariff_6_month_uzs: int = Field(default=120_000, ge=0)
+    tariff_12_month_uzs: int = Field(default=210_000, ge=0)
+
+    # To'lov kartasi / rekvizit (ko'rsatiladi)
+    payment_card_number: str = ""
+
     # Telethon — ulanish va qayta urinish (production)
     telethon_connection_retries: int = Field(default=3, ge=1, le=10)
     telethon_retry_delay: int = Field(default=2, ge=1, le=30)

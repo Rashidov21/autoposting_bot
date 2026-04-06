@@ -32,6 +32,9 @@ class User(Base):
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     subscription_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    demo_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    sub_reminder_3d_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    sub_reminder_1d_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     payment_status: Mapped[str] = mapped_column(String(32), nullable=False, default="none")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
