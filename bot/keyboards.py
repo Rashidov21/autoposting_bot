@@ -14,6 +14,8 @@ from bot.messages import (
     BTN_STOP,
     BTN_TARIFF,
     BTN_VIDEO,
+    INLINE_NAV_NEW_XABAR,
+    INLINE_NAV_STATUS,
     INTERVAL_10,
     INTERVAL_15,
     INTERVAL_3,
@@ -107,7 +109,7 @@ def phone_share_kb() -> ReplyKeyboardMarkup:
 def after_stop_inline_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📢 Yangi kampaniya", callback_data="nav:campaign")],
-            [InlineKeyboardButton(text="📊 Holatni ko'rish", callback_data="nav:status")],
+            [InlineKeyboardButton(text=INLINE_NAV_NEW_XABAR, callback_data="nav:campaign")],
+            [InlineKeyboardButton(text=INLINE_NAV_STATUS, callback_data="nav:status")],
         ]
     )

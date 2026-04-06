@@ -82,6 +82,51 @@ def set_campaign_accounts(db: Session, campaign: Campaign, account_ids: list[uui
         db.add(CampaignAccount(campaign_id=campaign.id, account_id=aid))
 
 
+def _reschedule_running(db: Session, campaign: Campaign) -> None:
+    """Ishlayotgan kampaniya uchun keyingi yuborish vaqtini yangilaydi."""
+    if campaign.status != "running":
+        return
+    jitter = random.uniform(0, 90)
+    nra = _utcnow() + timedelta(minutes=campaign.interval_minutes) + timedelta(seconds=jitter)
+    s = db.execute(select(Schedule).where(Schedule.campaign_id == campaign.id)).scalar_one_or_none()
+    if s:
+        s.next_run_at = nra
+        db.add(s)
+    db.add(campaign)
+
+
+def update_campaign_message_text(db: Session, campaign: Campaign, message_text: str) -> None:
+    campaign.message_text = message_text
+    db.add(campaign)
+    _reschedule_running(db, campaign)
+
+
+def update_campaign_interval_minutes(db: Session, campaign: Campaign, interval_minutes: int) -> None:
+    if interval_minutes not in (3, 5, 10, 15):
+        raise ValueError("interval 3, 5, 10 yoki 15 bo'lishi kerak")
+    campaign.interval_minutes = interval_minutes
+    db.add(campaign)
+    _reschedule_running(db, campaign)
+
+
+def replace_campaign_groups(db: Session, campaign: Campaign, group_ids: list[uuid.UUID]) -> None:
+    db.execute(delete(CampaignGroup).where(CampaignGroup.campaign_id == campaign.id))
+    for gid in group_ids:
+        g = db.get(Group, gid)
+        if not g or g.user_id != campaign.user_id:
+            continue
+        db.add(CampaignGroup(campaign_id=campaign.id, group_id=gid))
+    db.add(campaign)
+    _reschedule_running(db, campaign)
+
+
+def list_campaign_group_ids(db: Session, campaign_id: uuid.UUID) -> list[uuid.UUID]:
+    rows = db.execute(
+        select(CampaignGroup.group_id).where(CampaignGroup.campaign_id == campaign_id)
+    ).scalars().all()
+    return list(rows)
+
+
 def start_campaign(db: Session, campaign: Campaign) -> tuple[Schedule, int]:
     """Kampaniyani ishga tushiradi; boshqa ishlayotgan kampaniyalarni pauzaga qo'yadi. (schedule, pauzalar soni)."""
     if campaign.status == "running":
