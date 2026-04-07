@@ -162,7 +162,7 @@ async def send_campaign_status(message: Message, telegram_id: int) -> None:
                 )
         text = header + "\n\n".join(blocks)
         await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-        await message.answer("\u200b", reply_markup=main_menu(telegram_id, db))
+        await message.answer("👇 Asosiy menyu:", reply_markup=main_menu(telegram_id, db))
     finally:
         db.close()
 

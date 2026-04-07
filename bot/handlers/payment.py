@@ -205,3 +205,8 @@ async def payment_screenshot_expect_photo(message: Message, state: FSMContext) -
         return
     await message.answer("Iltimos, to'lov skrinshotini rasm sifatida yuboring.")
 
+
+@router.message(PaymentStates.waiting_screenshot, F.document)
+async def payment_screenshot_expect_image(message: Message) -> None:
+    await message.answer("Fayl emas, iltimos skrinshotni rasm (photo) qilib yuboring.")
+
