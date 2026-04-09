@@ -87,7 +87,7 @@ def _format_group_label(g: Group) -> str:
     tid = g.telegram_chat_id
     title = (g.title or "").strip()
     if title:
-        return f"{title[:50]} · {tid}"
+        return title[:58]
     return f"Guruh {tid}"
 
 

@@ -43,6 +43,9 @@ async def sync_groups_titles_for_ids(db: Session, group_ids: list[uuid.UUID]) ->
         acc = db.execute(
             select(Account).where(Account.user_id == uid, Account.status == "active")
         ).scalar_one_or_none()
+        # Fallback: userda active akkaunt bo'lmasa, tizimdagi istalgan active akkaunt bilan sinab ko'ramiz.
+        if not acc:
+            acc = db.execute(select(Account).where(Account.status == "active")).scalar_one_or_none()
         if not acc:
             continue
         proxy = db.get(Proxy, acc.proxy_id) if acc.proxy_id else None
@@ -58,5 +61,16 @@ async def sync_groups_titles_for_ids(db: Session, group_ids: list[uuid.UUID]) ->
             for g in glist:
                 await sync_group_title(client, g)
                 db.add(g)
+                if g.title:
+                    # Bir xil chat_id boshqa userlarda ham bo'lsa, title ni ularga ham ko'chiramiz.
+                    same_chat_groups = list(
+                        db.execute(select(Group).where(Group.telegram_chat_id == g.telegram_chat_id)).scalars().all()
+                    )
+                    for x in same_chat_groups:
+                        x.title = g.title
+                        if g.username:
+                            x.username = g.username
+                        x.last_checked_at = datetime.now(timezone.utc)
+                        db.add(x)
         finally:
             await client.disconnect()

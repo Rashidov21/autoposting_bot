@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
+import logging
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db.models import Group, User
+
+logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime:
@@ -32,15 +35,17 @@ def upsert_user(db: Session, telegram_id: int, username: str | None, full_name: 
     )
     db.add(u)
     db.flush()
-    _ensure_default_groups(db, u)
+    created_group_ids = _ensure_default_groups(db, u)
+    _queue_group_title_sync(created_group_ids)
     return u
 
 
-def _ensure_default_groups(db: Session, user: User) -> None:
+def _ensure_default_groups(db: Session, user: User) -> list[uuid.UUID]:
     """Yangi user uchun default guruhlarni biriktiradi."""
+    created_ids: list[uuid.UUID] = []
     default_ids = get_settings().default_group_chat_id_list
     if not default_ids:
-        return
+        return created_ids
     for chat_id in default_ids:
         g = db.execute(
             select(Group).where(
@@ -50,13 +55,27 @@ def _ensure_default_groups(db: Session, user: User) -> None:
         ).scalar_one_or_none()
         if g:
             continue
-        db.add(
-            Group(
-                user_id=user.id,
-                telegram_chat_id=int(chat_id),
-                is_valid=True,
-            )
+        ng = Group(
+            user_id=user.id,
+            telegram_chat_id=int(chat_id),
+            is_valid=True,
         )
+        db.add(ng)
+        db.flush()
+        created_ids.append(ng.id)
+    return created_ids
+
+
+def _queue_group_title_sync(group_ids: list[uuid.UUID]) -> None:
+    """Guruh nomlarini olish vazifasini queue ga qo'shadi."""
+    if not group_ids:
+        return
+    try:
+        from worker.tasks import sync_group_titles_task
+
+        sync_group_titles_task.delay([str(x) for x in group_ids])
+    except Exception as e:
+        logger.info("sync_group_titles_task queue skip: %s", e)
 
 
 def get_by_telegram_id(db: Session, telegram_id: int) -> User | None:

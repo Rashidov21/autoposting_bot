@@ -84,7 +84,7 @@ def groups_inline_kb(rows: list[tuple[str, str, bool]]) -> InlineKeyboardMarkup:
     ib: list[list[InlineKeyboardButton]] = []
     for gid, label, selected in rows:
         mark = "✅" if selected else "☐"
-        short_label = (label or "")[:52]
+        short_label = (label or "")[:60]
         ib.append(
             [
                 InlineKeyboardButton(text=f"{mark} {short_label}", callback_data=f"grp:tog:{gid}"),
