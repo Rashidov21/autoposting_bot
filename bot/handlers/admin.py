@@ -283,6 +283,7 @@ async def admin_block_toggle(callback: CallbackQuery) -> None:
         await callback.answer("Xato")
         return
     db = SessionLocal()
+    user_tg_id: int | None = None
     try:
         u = user_service.get_by_id(db, uid)
         if not u:
@@ -290,9 +291,24 @@ async def admin_block_toggle(callback: CallbackQuery) -> None:
             return
         new_blocked = not u.is_blocked
         user_service.block_user(db, uid, new_blocked)
+        user_tg_id = u.telegram_id
         db.commit()
     finally:
         db.close()
+    if user_tg_id:
+        try:
+            if new_blocked:
+                await callback.bot.send_message(
+                    user_tg_id,
+                    "⛔ Siz admin tomonidan bloklandingiz. Botdan foydalanish vaqtincha to'xtatildi.",
+                )
+            else:
+                await callback.bot.send_message(
+                    user_tg_id,
+                    "✅ Siz blokdan chiqarildingiz. Botdan yana foydalanishingiz mumkin.",
+                )
+        except Exception:
+            pass
     await callback.answer("OK")
     await _render_users_page(callback, page)
 
