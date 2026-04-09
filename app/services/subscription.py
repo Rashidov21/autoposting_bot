@@ -23,10 +23,8 @@ def is_subscription_active(user: User) -> bool:
 
 
 def has_bot_access(user: User) -> bool:
-    """Obuna, demo yoki kutilayotgan to'lov — botdan foydalanish."""
+    """Faqat faol obuna yoki demo davrida botdan to'liq foydalanish."""
     if is_subscription_active(user):
-        return True
-    if (user.payment_status or "") == "pending":
         return True
     if user.demo_expires_at is None:
         return True

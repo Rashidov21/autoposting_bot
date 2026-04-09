@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db.models import Campaign, Group
 from app.db.session import SessionLocal
+from app.services.subscription import has_bot_access
 from app.services import users as user_service
 from bot.messages import (
     BTN_ACCOUNT,
@@ -31,20 +32,28 @@ from bot.messages import (
 def main_menu(telegram_id: int | None = None, db: Session | None = None) -> ReplyKeyboardMarkup:
     """Ikkinchi qator: ishlayotgan xabar bo'lsa To'xtatish, aks holda pauzada xabar bo'lsa Ishga tushirish."""
     second = BTN_STOP
+    can_use_campaign = True
     if db is not None and telegram_id is not None:
         u = user_service.get_by_telegram_id(db, telegram_id)
         if u:
+            can_use_campaign = has_bot_access(u)
             camps = list(db.execute(select(Campaign).where(Campaign.user_id == u.id)).scalars().all())
             any_running = any(c.status == "running" for c in camps)
             any_paused = any(c.status == "paused" for c in camps)
             if not any_running and any_paused:
                 second = BTN_RESUME
-    rows: list[list[KeyboardButton]] = [
-        [KeyboardButton(text=BTN_TARIFF), KeyboardButton(text=BTN_CAMPAIGN)],
-        [KeyboardButton(text=BTN_STATUS), KeyboardButton(text=second)],
-        [KeyboardButton(text=BTN_VIDEO), KeyboardButton(text=BTN_ACCOUNT)],
-        [KeyboardButton(text=BTN_HELP)],
-    ]
+    rows: list[list[KeyboardButton]] = []
+    if can_use_campaign:
+        rows.append([KeyboardButton(text=BTN_TARIFF), KeyboardButton(text=BTN_CAMPAIGN)])
+    else:
+        rows.append([KeyboardButton(text=BTN_TARIFF)])
+    rows.extend(
+        [
+            [KeyboardButton(text=BTN_STATUS), KeyboardButton(text=second)],
+            [KeyboardButton(text=BTN_VIDEO), KeyboardButton(text=BTN_ACCOUNT)],
+            [KeyboardButton(text=BTN_HELP)],
+        ]
+    )
     if telegram_id is not None and telegram_id in get_settings().admin_telegram_id_set:
         rows.append([KeyboardButton(text=BTN_ADMIN)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
