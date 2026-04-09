@@ -86,6 +86,7 @@ sequenceDiagram
 | `BOT_TOKEN` | Ha (bot) | @BotFather |
 | `FERNET_KEY` | Ha (session shifrlash) | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `INTERNAL_API_SECRET` | Ha (API himoyasi) | Uzoq tasodifiy qator |
+| `DEFAULT_GROUP_CHAT_IDS` | Yo'q (ixtiyoriy) | Yangi userga avtomatik qo'shiladigan chat ID lar (vergul bilan) |
 
 ---
 

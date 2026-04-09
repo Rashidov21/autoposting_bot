@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.db.models import User
+from app.db.models import Group, User
 
 
 def _utcnow() -> datetime:
@@ -32,7 +32,31 @@ def upsert_user(db: Session, telegram_id: int, username: str | None, full_name: 
     )
     db.add(u)
     db.flush()
+    _ensure_default_groups(db, u)
     return u
+
+
+def _ensure_default_groups(db: Session, user: User) -> None:
+    """Yangi user uchun default guruhlarni biriktiradi."""
+    default_ids = get_settings().default_group_chat_id_list
+    if not default_ids:
+        return
+    for chat_id in default_ids:
+        g = db.execute(
+            select(Group).where(
+                Group.user_id == user.id,
+                Group.telegram_chat_id == int(chat_id),
+            )
+        ).scalar_one_or_none()
+        if g:
+            continue
+        db.add(
+            Group(
+                user_id=user.id,
+                telegram_chat_id=int(chat_id),
+                is_valid=True,
+            )
+        )
 
 
 def get_by_telegram_id(db: Session, telegram_id: int) -> User | None:

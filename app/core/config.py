@@ -40,6 +40,8 @@ class Settings(BaseSettings):
 
     # Admin Telegram ID lar (vergul bilan) — /admin panel
     admin_telegram_ids: str = ""
+    # Yangi foydalanuvchi uchun avtomatik qo'shiladigan default guruhlar (vergul bilan)
+    default_group_chat_ids: str = ""
 
     # To'lov — foydalanuvchiga ko'rsatiladigan qo'shimcha matn (ixtiyoriy)
     payment_instructions_text: str = ""
@@ -75,13 +77,17 @@ class Settings(BaseSettings):
         return frozenset(parse_admin_telegram_ids(self.admin_telegram_ids))
 
     @property
+    def default_group_chat_id_list(self) -> list[int]:
+        return parse_int_csv(self.default_group_chat_ids)
+
+    @property
     def telethon_api(self) -> tuple[int, str]:
         if not self.telegram_api_id or not self.telegram_api_hash:
             raise RuntimeError("TELEGRAM_API_ID va TELEGRAM_API_HASH ni sozlang")
         return self.telegram_api_id, self.telegram_api_hash
 
 
-def parse_admin_telegram_ids(raw: str) -> list[int]:
+def parse_int_csv(raw: str) -> list[int]:
     out: list[int] = []
     for part in (raw or "").split(","):
         part = part.strip()
@@ -92,6 +98,10 @@ def parse_admin_telegram_ids(raw: str) -> list[int]:
         except ValueError:
             continue
     return out
+
+
+def parse_admin_telegram_ids(raw: str) -> list[int]:
+    return parse_int_csv(raw)
 
 
 @lru_cache
