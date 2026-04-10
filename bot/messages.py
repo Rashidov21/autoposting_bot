@@ -135,3 +135,4 @@ MSG_PHOTO_NEED_TARIFF = "Obuna uchun avval «Tarif va to'lov» bo'limidan tarif 
 # Inline (to'xtatishdan keyin)
 INLINE_NAV_NEW_XABAR = "📢 Yangi xabar"
 INLINE_NAV_STATUS = "📊 Holatni ko'rish"
+INLINE_HELP_ACCOUNT_STATUS = "ℹ️ Akkaunt statusi"

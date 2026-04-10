@@ -22,6 +22,7 @@ from bot.messages import (
     BTN_VIDEO,
     INLINE_NAV_NEW_XABAR,
     INLINE_NAV_STATUS,
+    INLINE_HELP_ACCOUNT_STATUS,
     INTERVAL_10,
     INTERVAL_15,
     INTERVAL_3,
@@ -167,5 +168,13 @@ def after_stop_inline_kb() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text=INLINE_NAV_NEW_XABAR, callback_data="nav:campaign")],
             [InlineKeyboardButton(text=INLINE_NAV_STATUS, callback_data="nav:status")],
+        ]
+    )
+
+
+def help_inline_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=INLINE_HELP_ACCOUNT_STATUS, callback_data="help:account_status")],
         ]
     )

@@ -8,18 +8,18 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.analytics.stats import campaign_totals
 from app.core.admin import is_admin
 from app.core.config import get_settings
-from app.db.models import Campaign, Schedule
+from app.db.models import Account, Campaign, Group, Schedule, SendLog
 from app.db.session import SessionLocal
 from app.services import campaigns as campaign_service
 from app.services import users as user_service
 from app.services.subscription import is_subscription_active
 from app.services import system as system_service
-from bot.keyboards import after_stop_inline_kb, main_menu, reply_main_menu
+from bot.keyboards import after_stop_inline_kb, help_inline_kb, main_menu, reply_main_menu
 from bot.messages import (
     BTN_CAMPAIGN,
     BTN_HELP,
@@ -199,7 +199,80 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
 @router.message(F.text == BTN_HELP)
 async def help_cmd(message: Message) -> None:
-    await message.answer(MSG_HELP, reply_markup=reply_main_menu(message.from_user.id))
+    await message.answer(
+        MSG_HELP,
+        reply_markup=reply_main_menu(message.from_user.id),
+    )
+    await message.answer("Quyidagidan birini tanlang:", reply_markup=help_inline_kb())
+
+
+@router.callback_query(F.data == "help:account_status")
+async def help_account_status(callback: CallbackQuery) -> None:
+    db = SessionLocal()
+    try:
+        u = user_service.get_by_telegram_id(db, callback.from_user.id)
+        if not u:
+            await callback.message.answer("/start")
+            await callback.answer()
+            return
+
+        accounts = list(
+            db.execute(select(Account).where(Account.user_id == u.id).order_by(Account.updated_at.desc()))
+            .scalars()
+            .all()
+        )
+        total_accounts = len(accounts)
+        active_accounts = sum(1 for a in accounts if a.status == "active")
+        latest_login_like = accounts[0].updated_at if accounts else None
+        login_text = "yo'q"
+        if latest_login_like:
+            dt = latest_login_like
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            login_text = dt.astimezone(_UZ_TZ).strftime("%d.%m.%Y %H:%M")
+
+        groups_n = int(
+            db.scalar(select(func.count()).select_from(Group).where(Group.user_id == u.id)) or 0
+        )
+        camps = campaign_service.list_user_campaigns(db, u.id)
+        running_n = sum(1 for c in camps if c.status == "running")
+        campaigns_n = len(camps)
+
+        by_status = dict(
+            db.execute(
+                select(SendLog.status, func.count())
+                .join(Campaign, Campaign.id == SendLog.campaign_id)
+                .where(Campaign.user_id == u.id)
+                .group_by(SendLog.status)
+            ).all()
+        )
+        sent_total = int(sum(int(v) for v in by_status.values()))
+        sent_ok = int(by_status.get("success", 0))
+        sent_fail = int(by_status.get("fail", 0))
+        sent_skipped = int(by_status.get("skipped", 0))
+
+        pay_status = (u.payment_status or "none").strip()
+        sub_text = "yo'q"
+        if u.subscription_ends_at:
+            se = u.subscription_ends_at
+            if se.tzinfo is None:
+                se = se.replace(tzinfo=timezone.utc)
+            sub_text = se.astimezone(_UZ_TZ).strftime("%d.%m.%Y %H:%M")
+
+        body = (
+            "📌 Akkaunt ma'lumotlari\n\n"
+            f"👤 Akkauntlar: {active_accounts}/{total_accounts} active\n"
+            f"🕒 Oxirgi login vaqti: {login_text} (Oʻzbekiston)\n"
+            f"👥 Guruhlar soni: {groups_n}\n"
+            f"📢 Xabarlar: {campaigns_n} ta (running: {running_n})\n"
+            f"📊 Statistika: {sent_ok} ok / {sent_total} jami (xato: {sent_fail}, o'tkazilgan: {sent_skipped})\n"
+            f"💳 To'lov holati: {pay_status}\n"
+            f"📅 Obuna: {sub_text}"
+        )
+        await callback.message.answer(body)
+        await callback.answer()
+    finally:
+        db.close()
 
 
 @router.message(F.text == BTN_STATUS)
