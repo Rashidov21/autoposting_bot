@@ -78,6 +78,7 @@ services:
   bot:
     build: .
     command: python -m bot.main
+    restart: unless-stopped
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/autopost

@@ -8,7 +8,7 @@ from app.db.models import Account
 from app.db.session import SessionLocal
 from app.services import users as user_service
 from bot.keyboards import reply_main_menu
-from bot.messages import BTN_ACCOUNT
+from bot.messages import BTN_ACCOUNT, BTN_CANCEL, MAIN_MENU_TEXTS
 from bot.states import LoginStates
 
 router = Router(name="login")
@@ -23,8 +23,16 @@ async def link_account(message: Message, state: FSMContext) -> None:
 @router.message(LoginStates.phone, F.text)
 async def login_phone(message: Message, state: FSMContext) -> None:
     phone = message.text.strip()
+    if phone == BTN_CANCEL:
+        await state.clear()
+        await message.answer("Bekor qilindi.", reply_markup=reply_main_menu(message.from_user.id))
+        return
+    if phone in MAIN_MENU_TEXTS:
+        await state.clear()
+        await message.answer("Jarayon bekor qilindi.", reply_markup=reply_main_menu(message.from_user.id))
+        return
     if not phone.startswith("+"):
-        await message.answer("+ bilan boshlang.")
+        await message.answer("+ bilan boshlang.\nYoki «Bekor qilish» ni bosing.")
         return
     db = SessionLocal()
     try:
@@ -58,6 +66,14 @@ async def login_phone(message: Message, state: FSMContext) -> None:
 @router.message(LoginStates.code, F.text)
 async def login_code(message: Message, state: FSMContext) -> None:
     code = message.text.strip()
+    if code == BTN_CANCEL:
+        await state.clear()
+        await message.answer("Bekor qilindi.", reply_markup=reply_main_menu(message.from_user.id))
+        return
+    if code in MAIN_MENU_TEXTS:
+        await state.clear()
+        await message.answer("Jarayon bekor qilindi.", reply_markup=reply_main_menu(message.from_user.id))
+        return
     data = await state.get_data()
     await state.clear()
     acc_id = data.get("account_id")

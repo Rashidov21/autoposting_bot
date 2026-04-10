@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -60,6 +61,7 @@ def _admin_home_kb() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="⛔ Bot OFF", callback_data="admin:bot:off"),
                 InlineKeyboardButton(text="✅ Bot ON", callback_data="admin:bot:on"),
             ],
+            [InlineKeyboardButton(text="🔄 Bot restart", callback_data="admin:bot:restart")],
             [InlineKeyboardButton(text="🎬 Video yangilash", callback_data="admin:video")],
         ]
     )
@@ -422,6 +424,14 @@ async def admin_bot_on(callback: CallbackQuery) -> None:
     finally:
         db.close()
     await callback.answer(MSG_ADMIN_BOT_ENABLED, show_alert=True)
+
+
+@router.callback_query(F.data == "admin:bot:restart")
+async def admin_bot_restart(callback: CallbackQuery) -> None:
+    await callback.answer("Bot qayta ishga tushirilmoqda...", show_alert=True)
+    await callback.message.answer("♻️ Bot qayta ishga tushirilmoqda...")
+    # Docker restart policy bilan bot konteyneri avtomatik qayta turadi.
+    os._exit(0)
 
 
 @router.callback_query(F.data == "admin:video")
