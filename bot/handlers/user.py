@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
+from aiogram.filters.state import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -40,7 +41,7 @@ from bot.messages import (
     MSG_VIDEO_PRIVATE_ONLY,
     MSG_WELCOME,
 )
-from bot.states import CampaignStates, PaymentStates
+from bot.states import CampaignStates
 
 router = Router(name="user")
 
@@ -223,6 +224,7 @@ async def help_account_status(callback: CallbackQuery) -> None:
         )
         total_accounts = len(accounts)
         active_accounts = sum(1 for a in accounts if a.status == "active")
+        account_state = "✅ Aktiv" if active_accounts > 0 else "❌ Aktiv emas"
         latest_login_like = accounts[0].updated_at if accounts else None
         login_text = "yo'q"
         if latest_login_like:
@@ -261,7 +263,9 @@ async def help_account_status(callback: CallbackQuery) -> None:
 
         body = (
             "📌 Akkaunt ma'lumotlari\n\n"
-            f"👤 Akkauntlar: {active_accounts}/{total_accounts} active\n"
+            f"👤 Akkaunt holati: {account_state}\n"
+            f"🔢 Ulangan akkauntlar: {total_accounts} ta\n"
+            f"🟢 Aktiv akkauntlar: {active_accounts} ta\n"
             f"🕒 Oxirgi login vaqti: {login_text} (Oʻzbekiston)\n"
             f"👥 Guruhlar soni: {groups_n}\n"
             f"📢 Xabarlar: {campaigns_n} ta (running: {running_n})\n"
@@ -379,14 +383,8 @@ async def video_tutorial(message: Message) -> None:
     await send_tutorial_video_message(message)
 
 
-@router.message(F.photo)
-async def stray_photo(message: Message, state: FSMContext) -> None:
-    st = await state.get_state()
-    if st == PaymentStates.waiting_screenshot.state:
-        return
-    if st == PaymentStates.waiting_phone.state:
-        await message.answer(MSG_PAYMENT_NEED_PHONE_FIRST)
-        return
+@router.message(StateFilter(None), F.photo)
+async def stray_photo(message: Message) -> None:
     if is_admin(message.from_user.id):
         return
     db = SessionLocal()
