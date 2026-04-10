@@ -46,6 +46,14 @@ def create_payment_request(
     phone = (contact_phone or "").strip()
     if len(phone) < 9:
         raise ValueError("Aloqa telefoni noto'g'ri")
+    existing = db.execute(
+        select(PaymentRequest).where(
+            PaymentRequest.user_id == user.id,
+            PaymentRequest.status == "pending",
+        )
+    ).scalar_one_or_none()
+    if existing:
+        raise ValueError("Sizda ko'rib chiqilmagan to'lov arizasi bor. Iltimos, admin javobini kuting.")
     pr = PaymentRequest(
         user_id=user.id,
         tariff_months=tariff_months,

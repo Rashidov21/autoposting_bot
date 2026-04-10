@@ -12,7 +12,7 @@ from app.db.session import SessionLocal
 from app.services import system as system_service
 from app.services import users as user_service
 from app.services.subscription import has_bot_access
-from bot.messages import BTN_CANCEL, BTN_HELP, BTN_RESUME, BTN_TARIFF, BTN_VIDEO
+from bot.messages import BTN_CANCEL, BTN_HELP, BTN_TARIFF, BTN_VIDEO
 
 
 class AccessMiddleware(BaseMiddleware):
@@ -62,7 +62,7 @@ class AccessMiddleware(BaseMiddleware):
                 allow = False
                 if isinstance(event, Message):
                     t = (event.text or "").strip()
-                    if t.startswith("/start") or t in (BTN_TARIFF, BTN_HELP, BTN_CANCEL, BTN_RESUME, BTN_VIDEO):
+                    if t.startswith("/start") or t in (BTN_TARIFF, BTN_HELP, BTN_CANCEL, BTN_VIDEO):
                         allow = True
                     if event.contact or event.photo:
                         allow = True

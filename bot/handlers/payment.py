@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import logging
 import re
 import uuid
 
@@ -29,6 +30,7 @@ from bot.messages import (
 from bot.states import PaymentStates
 
 router = Router(name="payment")
+logger = logging.getLogger(__name__)
 
 
 def _tariff_intro_text() -> str:
@@ -61,10 +63,10 @@ async def _notify_admins_payment(
     full_name: str | None,
     contact_phone: str,
     file_id: str,
-) -> None:
+) -> bool:
     settings = get_settings()
     if not settings.admin_telegram_id_set:
-        return
+        return False
     pid = str(pr_id)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -86,11 +88,14 @@ async def _notify_admins_payment(
         f"📅 Tarif: {months} oy\n"
         f"🔖 Ariza ID: <code>{pid}</code>"
     )
+    sent_ok = 0
     for aid in settings.admin_telegram_id_set:
         try:
             await bot.send_photo(aid, file_id, caption=cap[:1024], reply_markup=kb, parse_mode="HTML")
+            sent_ok += 1
         except Exception:
-            pass
+            logger.exception("Payment notify failed for admin_id=%s payment_request_id=%s", aid, pid)
+    return sent_ok > 0
 
 
 @router.message(F.text == BTN_TARIFF)
@@ -180,8 +185,8 @@ async def payment_screenshot(message: Message, state: FSMContext) -> None:
         if not has_active_account:
             await state.clear()
             await message.answer(
-                "To'lov qabul qilindi, lekin akkauntingiz hali active emas.\n"
-                "Avval akkauntni ulang va active holatga keltiring.",
+                "To'lovni yuborishdan oldin akkauntingiz active bo'lishi kerak.\n"
+                "Avval akkauntni ulang va active holatga keltiring, keyin skrinshotni qayta yuboring.",
                 reply_markup=reply_main_menu(message.from_user.id),
             )
             return
@@ -200,7 +205,7 @@ async def payment_screenshot(message: Message, state: FSMContext) -> None:
 
     await state.clear()
     await message.answer(MSG_PAYMENT_SUBMITTED, reply_markup=reply_main_menu(message.from_user.id))
-    await _notify_admins_payment(
+    delivered = await _notify_admins_payment(
         message.bot,
         pr_id,
         months,
@@ -210,6 +215,11 @@ async def payment_screenshot(message: Message, state: FSMContext) -> None:
         phone,
         file_id,
     )
+    if not delivered:
+        await message.answer(
+            "⚠️ Ariza saqlandi, ammo adminga yetkazishda vaqtinchalik muammo bo'ldi. "
+            "Birozdan so'ng qayta urinib ko'ring yoki admin bilan bog'laning."
+        )
 
 
 @router.message(PaymentStates.waiting_screenshot, F.text)
