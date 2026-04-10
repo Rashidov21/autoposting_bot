@@ -169,7 +169,10 @@ async def payment_screenshot(message: Message, state: FSMContext) -> None:
     phone = (data.get("contact_phone") or "").strip()
     if months not in (1, 6, 12) or not phone:
         await state.clear()
-        await message.answer("Sessiya tugadi. Qaytadan «Tarif va to'lov»ni oching.")
+        await message.answer(
+            "Sessiya tugadi. Qaytadan «Tarif va to'lov»ni oching.",
+            reply_markup=reply_main_menu(message.from_user.id),
+        )
         return
     file_id = message.photo[-1].file_id
     db = SessionLocal()
@@ -228,10 +231,16 @@ async def payment_screenshot_expect_photo(message: Message, state: FSMContext) -
         await state.clear()
         await message.answer("Bekor qilindi.", reply_markup=reply_main_menu(message.from_user.id))
         return
-    await message.answer("Iltimos, to'lov skrinshotini rasm sifatida yuboring.")
+    await message.answer(
+        "Iltimos, to'lov skrinshotini rasm sifatida yuboring.",
+        reply_markup=reply_main_menu(message.from_user.id),
+    )
 
 
 @router.message(PaymentStates.waiting_screenshot, F.document)
 async def payment_screenshot_expect_image(message: Message) -> None:
-    await message.answer("Fayl emas, iltimos skrinshotni rasm (photo) qilib yuboring.")
+    await message.answer(
+        "Fayl emas, iltimos skrinshotni rasm (photo) qilib yuboring.",
+        reply_markup=reply_main_menu(message.from_user.id),
+    )
 
