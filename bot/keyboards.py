@@ -9,6 +9,7 @@ from app.db.models import Campaign, Group
 from app.db.session import SessionLocal
 from app.services.subscription import has_bot_access
 from app.services import users as user_service
+from bot.formatting import group_display_label
 from bot.messages import (
     BTN_ACCOUNT,
     BTN_ADMIN,
@@ -70,9 +71,7 @@ def reply_main_menu(telegram_id: int) -> ReplyKeyboardMarkup:
 
 
 def _group_button_label(g: Group) -> str:
-    if g.title:
-        return g.title[:55]
-    return f"Guruh {g.telegram_chat_id}"
+    return group_display_label(g.telegram_chat_id, g.title, max_len=55)
 
 
 def groups_pick_kb(groups: list[Group], selected: set[str]) -> InlineKeyboardMarkup:

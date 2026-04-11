@@ -13,7 +13,9 @@ from sqlalchemy import select
 from app.db.models import Campaign, Group
 from app.db.session import SessionLocal
 from app.services import campaigns as campaign_service
+from app.services.group_titles_bot import refresh_group_titles_from_bot
 from app.services import users as user_service
+from bot.formatting import format_local_datetime, group_display_label
 from bot.handlers.user import (
     execute_resume_answer,
     execute_stop_answer,
@@ -84,11 +86,22 @@ def _parse_interval(text: str) -> int | None:
 
 
 def _format_group_label(g: Group) -> str:
-    tid = g.telegram_chat_id
-    title = (g.title or "").strip()
-    if title:
-        return title[:58]
-    return f"Guruh {tid}"
+    return group_display_label(g.telegram_chat_id, g.title)
+
+
+def _campaign_started_user_text(
+    *,
+    extra_paused: str,
+    group_labels: list[str],
+    next_run_at,
+) -> str:
+    block = "\n".join(f"• {x}" for x in group_labels) if group_labels else "—"
+    next_s = format_local_datetime(next_run_at)
+    return (
+        f"{MSG_CAMPAIGN_STARTED}{extra_paused}\n\n"
+        f"👥 Guruhlar:\n{block}\n\n"
+        f"⏱ Keyingi yuborish: {next_s} (Toshkent)"
+    )
 
 
 def _group_rows(
@@ -113,6 +126,16 @@ async def _send_groups_prompt(message: Message, state: FSMContext, user_id: uuid
             .scalars()
             .all()
         )
+        changed = await refresh_group_titles_from_bot(message.bot, db, groups)
+        if changed:
+            db.commit()
+            groups = list(
+                db.execute(
+                    select(Group).where(Group.user_id == user_id).order_by(Group.created_at.desc())
+                )
+                .scalars()
+                .all()
+            )
     finally:
         db.close()
     missing_titles = [str(g.id) for g in groups if not (g.title or "").strip()]
@@ -673,16 +696,20 @@ async def campaign_interval(message: Message, state: FSMContext) -> None:
             gids,
         )
         s, paused_n = campaign_service.start_campaign(db, c)
+        groups_for = list(db.execute(select(Group).where(Group.id.in_(gids))).scalars().all())
+        await refresh_group_titles_from_bot(message.bot, db, groups_for)
+        group_labels = [_format_group_label(g) for g in groups_for]
+        next_at = s.next_run_at
         db.commit()
         extra = ""
         if paused_n > 0:
             extra = "\n\n" + MSG_CAMPAIGN_OLD_PAUSED
-        await message.answer(
-            f"{MSG_CAMPAIGN_STARTED}{extra}\n\n"
-            f"ID: `{c.id}`\nKeyingi ish: {s.next_run_at.isoformat()}",
-            parse_mode="Markdown",
-            reply_markup=reply_main_menu(message.from_user.id),
+        body = _campaign_started_user_text(
+            extra_paused=extra,
+            group_labels=group_labels,
+            next_run_at=next_at,
         )
+        await message.answer(body, reply_markup=reply_main_menu(message.from_user.id))
     except Exception as e:
         db.rollback()
         await message.answer(f"Xato: {e}", reply_markup=reply_main_menu(message.from_user.id))

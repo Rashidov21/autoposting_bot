@@ -14,8 +14,9 @@ from app.analytics.stats import campaign_totals
 from app.db.models import Account, Campaign, Group, Schedule
 from app.db.session import SessionLocal
 from app.services import campaigns as campaign_service
+from app.services.group_titles_bot import refresh_group_titles_from_bot
 from app.services import users as user_service
-from bot.formatting import format_local_datetime
+from bot.formatting import format_local_datetime, group_display_label
 from bot.keyboards import groups_pick_kb, intervals_kb, main_menu
 from bot.messages import (
     BTN_ACCOUNT,
@@ -239,13 +240,16 @@ async def campaign_interval(message: Message, state: FSMContext) -> None:
             gids,
         )
         s, _paused = campaign_service.start_campaign(db, c)
-        db.commit()
+        groups_for = list(db.execute(select(Group).where(Group.id.in_(gids))).scalars().all())
+        await refresh_group_titles_from_bot(message.bot, db, groups_for)
+        labels = [group_display_label(g.telegram_chat_id, g.title) for g in groups_for]
         next_local = format_local_datetime(s.next_run_at)
+        block = "\n".join(f"• {x}" for x in labels) if labels else "—"
+        db.commit()
         await message.answer(
-            "Xabarlar avtomatik yuborish ishga tushdi.\n\n"
-            f"Keyingi yuborish: {next_local} (UTC+5, Toshkent)\n"
-            f"Texnik ID: `{c.id}`",
-            parse_mode="Markdown",
+            "✅ Xabarlar avtomatik yuborish ishga tushdi.\n\n"
+            f"👥 Guruhlar:\n{block}\n\n"
+            f"⏱ Keyingi yuborish: {next_local} (Toshkent)",
             reply_markup=main_menu(message.from_user.id),
         )
     except Exception as e:
