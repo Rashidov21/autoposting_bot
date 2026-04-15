@@ -44,9 +44,29 @@ services:
       redis:
         condition: service_started
 
-  worker:
+  worker_campaign:
     build: .
-    command: celery -A worker.celery_app:celery_app worker -l info
+    command: celery -A worker.celery_app:celery_app worker -l info -Q campaign -c ${CELERY_CAMPAIGN_WORKER_CONCURRENCY:-2} --prefetch-multiplier=${CELERY_WORKER_PREFETCH_MULTIPLIER:-1} --max-tasks-per-child=${CELERY_WORKER_MAX_TASKS_PER_CHILD:-30} --max-memory-per-child=${CELERY_WORKER_MAX_MEMORY_PER_CHILD_KB:-450000}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/autopost
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      SESSIONS_DIR: /app/sessions
+    volumes:
+      - sessions:/app/sessions
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  worker_aux:
+    build: .
+    command: celery -A worker.celery_app:celery_app worker -l info -Q default,scheduler -c ${CELERY_AUX_WORKER_CONCURRENCY:-1} --prefetch-multiplier=${CELERY_WORKER_PREFETCH_MULTIPLIER:-1} --max-tasks-per-child=${CELERY_WORKER_MAX_TASKS_PER_CHILD:-30} --max-memory-per-child=${CELERY_WORKER_MAX_MEMORY_PER_CHILD_KB:-450000}
+    restart: unless-stopped
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/autopost

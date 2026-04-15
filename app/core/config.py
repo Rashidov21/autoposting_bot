@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
+    celery_task_ignore_result: bool = True
+    celery_result_expires_seconds: int = Field(default=3600, ge=300, le=172800)
+    celery_default_queue: str = "default"
+    celery_campaign_queue: str = "campaign"
+    celery_scheduler_queue: str = "scheduler"
+    celery_worker_prefetch_multiplier: int = Field(default=1, ge=1, le=8)
+    celery_worker_max_tasks_per_child: int = Field(default=30, ge=1, le=500)
+    celery_worker_max_memory_per_child_kb: int = Field(default=450_000, ge=128_000, le=2_000_000)
 
     telegram_api_id: int = 0
     telegram_api_hash: str = ""
@@ -64,6 +72,7 @@ class Settings(BaseSettings):
 
     # Yuborish — performance va barqarorlik
     sender_log_commit_batch: int = Field(default=12, ge=1, le=500)
+    schedule_due_campaigns_batch_limit: int = Field(default=300, ge=10, le=5000)
     campaign_lock_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
     campaign_soft_time_limit_seconds: int = Field(default=2400, ge=60, le=7200)
     campaign_time_limit_seconds: int = Field(default=3600, ge=120, le=10800)

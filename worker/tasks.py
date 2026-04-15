@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.db.models import Campaign, Schedule
 from app.db.session import SessionLocal
+from app.core.config import get_settings
 from engine.sender import run_campaign_round_sync
 from worker.celery_app import celery_app
 
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 def schedule_due_campaigns() -> None:
     """Navbatdagi kampaniyalarni topib, bajarish vazifasini yuboradi (task_id bilan dublikat oldini olish)."""
     now = datetime.now(timezone.utc)
+    settings = get_settings()
     db = SessionLocal()
     try:
         schedules = db.execute(
@@ -25,14 +27,24 @@ def schedule_due_campaigns() -> None:
             .join(Campaign, Campaign.id == Schedule.campaign_id)
             .where(Campaign.status == "running")
             .where(Schedule.next_run_at <= now)
+            .order_by(Schedule.next_run_at.asc())
+            .limit(settings.schedule_due_campaigns_batch_limit)
         ).scalars().all()
+        if not schedules:
+            return
+        queued = 0
         for s in schedules:
             tid = f"pc-{s.campaign_id}-{int(s.next_run_at.timestamp())}"
             try:
-                process_campaign.apply_async(args=[str(s.campaign_id)], task_id=tid)
-                logger.info("Queued campaign %s task_id=%s", s.campaign_id, tid)
+                process_campaign.apply_async(
+                    args=[str(s.campaign_id)],
+                    task_id=tid,
+                    queue=settings.celery_campaign_queue,
+                )
+                queued += 1
             except Exception as e:
                 logger.info("enqueue skip (dublikat yoki broker): %s", e)
+        logger.info("schedule_due_campaigns due=%s queued=%s", len(schedules), queued)
     finally:
         db.close()
 
