@@ -10,7 +10,7 @@ from typing import Any
 
 from telethon import TelegramClient, errors
 from telethon.tl.functions.channels import JoinChannelRequest
-from telethon.tl.types import Channel, Chat, InputPeerChannel, User
+from telethon.tl.types import Channel, Chat, InputPeerChannel, PeerChannel, PeerChat, User
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +42,118 @@ class EntityCache:
             self._data.popitem(last=False)
 
 
-async def resolve_entity(client: TelegramClient, peer: int, cache: EntityCache) -> Any:
+def _extract_channel_id(peer: int) -> int | None:
+    """
+    Extract the real Telegram channel_id from a negative peer integer.
+
+    Telegram clients use two overlapping conventions for channel/supergroup IDs:
+      - Bot API format : -(100_000_000_000 + channel_id)  -> string starts with "-100"
+      - MTProto format : -(1_000_000_000_000 + channel_id) -> string also starts with "-100"
+        for channel IDs >= 1_000_000_000 (10-digit IDs)
+
+    For both cases, stripping the leading "100" characters from abs(peer) gives the
+    correct channel_id.  Examples:
+      -100219813130  -> 219813130    (Bot API, 9-digit channel_id)
+      -1000219813130 -> 219813130    (MTProto equivalent)
+      -1002190403415 -> 2190403415   (both formats coincide for 10-digit channel_ids)
+
+    Returns None if peer is not a recognisable channel/supergroup negative ID.
+    """
+    if peer >= 0:
+        return None
+    s = str(abs(peer))
+    if not s.startswith("100") or len(s) < 4:
+        return None
+    channel_id = int(s[3:])
+    return channel_id if channel_id > 0 else None
+
+
+async def resolve_entity(
+    client: TelegramClient,
+    peer: int,
+    cache: EntityCache,
+    *,
+    username: str | None = None,
+    access_hash: int | None = None,
+) -> Any:
+    """
+    Resolve a Telegram entity with four ordered fallback strategies.
+
+    Why raw ``get_entity(-100...)`` fails
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Telegram's MTProto API requires an ``access_hash`` to look up channels and
+    supergroups.  Telethon's session stores (channel_id, access_hash) pairs from
+    previous interactions.  If the pair is absent from the session (fresh worker
+    process, new account, account never joined the group) Telethon raises
+    ``ChatIdInvalidError`` or ``ValueError`` when given a bare integer.
+
+    Resolution order
+    ~~~~~~~~~~~~~~~~~
+    1. **LRU cache** – free, no network round-trip.
+    2. **InputPeerChannel(channel_id, access_hash)** – most reliable; works even
+       when the account is not a member.  Requires ``access_hash`` from the DB.
+    3. **Username** – works for public channels without ``access_hash``.
+    4. **PeerChannel(channel_id)** – works only when Telethon's session cache
+       already contains the ``(channel_id, access_hash)`` pair (i.e. the account
+       previously interacted with this chat in the *same session file*).
+    5. **PeerChat(abs_id)** – fallback for basic groups (non-supergroup).
+    6. **Raw integer** – last resort; raises on failure.
+    """
     cached = cache.get(peer)
     if cached is not None:
         return cached
-    entity = await client.get_entity(peer)
+
+    entity: Any = None
+    channel_id = _extract_channel_id(peer)
+
+    # --- Strategy 1: InputPeerChannel with stored access_hash ---
+    if channel_id is not None and access_hash is not None:
+        try:
+            entity = await client.get_entity(InputPeerChannel(channel_id, access_hash))
+        except Exception as exc:
+            logger.debug(
+                "resolve_entity: InputPeerChannel failed peer=%s: %s",
+                peer, exc,
+            )
+            entity = None
+
+    # --- Strategy 2: Username (public channels, no access_hash needed) ---
+    if entity is None and username:
+        try:
+            entity = await client.get_entity(username.lstrip("@"))
+        except Exception as exc:
+            logger.debug(
+                "resolve_entity: username failed peer=%s username=%s: %s",
+                peer, username, exc,
+            )
+            entity = None
+
+    # --- Strategy 3: PeerChannel (session cache must have access_hash) ---
+    if entity is None and channel_id is not None:
+        try:
+            entity = await client.get_entity(PeerChannel(channel_id))
+        except Exception as exc:
+            logger.debug(
+                "resolve_entity: PeerChannel failed peer=%s: %s",
+                peer, exc,
+            )
+            entity = None
+
+    # --- Strategy 4: PeerChat (basic groups, not supergroups) ---
+    if entity is None and peer < 0 and channel_id is None:
+        try:
+            entity = await client.get_entity(PeerChat(abs(peer)))
+        except Exception as exc:
+            logger.debug(
+                "resolve_entity: PeerChat failed peer=%s: %s",
+                peer, exc,
+            )
+            entity = None
+
+    # --- Strategy 5: Raw integer – raises on failure (intentional) ---
+    if entity is None:
+        entity = await client.get_entity(peer)
+
     cache.set(peer, entity)
     return entity
 

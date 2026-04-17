@@ -10,21 +10,33 @@ from telethon import TelegramClient
 
 from app.db.models import Account, Group, Proxy
 from engine.client_factory import build_client
-from engine.telegram_helpers import EntityCache, resolve_entity
+from engine.telegram_helpers import EntityCache, resolve_entity  # noqa: F401 (used in sync_groups_titles_for_ids)
 
 logger = logging.getLogger(__name__)
 
 
-async def sync_group_title(client: TelegramClient, g: Group) -> None:
+async def sync_group_title(client: TelegramClient, g: Group, cache: "EntityCache | None" = None) -> None:
+    from engine.telegram_helpers import EntityCache, resolve_entity
+
     peer = int(g.telegram_chat_id)
+    _cache = cache if cache is not None else EntityCache(max_size=1)
     try:
-        ent = await client.get_entity(peer)
+        ent = await resolve_entity(
+            client,
+            peer,
+            _cache,
+            username=g.username or None,
+            access_hash=g.tg_access_hash or None,
+        )
         title = getattr(ent, "title", None) or getattr(ent, "first_name", None)
         uname = getattr(ent, "username", None)
+        fresh_hash: int | None = getattr(ent, "access_hash", None)
         if title:
             g.title = title[:512]
         if uname:
             g.username = uname[:255]
+        if fresh_hash is not None and g.tg_access_hash != fresh_hash:
+            g.tg_access_hash = fresh_hash
         g.last_checked_at = datetime.now(timezone.utc)
     except Exception as e:
         logger.info("Guruh nomi olinmadi peer=%s: %s", peer, e)
@@ -67,19 +79,28 @@ async def sync_groups_titles_for_ids(db: Session, group_ids: list[uuid.UUID]) ->
             cache = EntityCache(max_size=300)
             for g in glist:
                 try:
-                    ent = await resolve_entity(client, int(g.telegram_chat_id), cache)
+                    ent = await resolve_entity(
+                        client,
+                        int(g.telegram_chat_id),
+                        cache,
+                        username=g.username or None,
+                        access_hash=g.tg_access_hash or None,
+                    )
                     title = getattr(ent, "title", None) or getattr(ent, "first_name", None)
                     uname = getattr(ent, "username", None)
+                    fresh_hash: int | None = getattr(ent, "access_hash", None)
                     if title:
                         g.title = title[:512]
                     if uname:
                         g.username = uname[:255]
+                    if fresh_hash is not None and g.tg_access_hash != fresh_hash:
+                        g.tg_access_hash = fresh_hash
                     g.last_checked_at = datetime.now(timezone.utc)
                 except Exception as e:
                     logger.info("Guruh nomi olinmadi peer=%s: %s", g.telegram_chat_id, e)
                 db.add(g)
                 if g.title:
-                    # Bir xil chat_id boshqa userlarda ham bo'lsa, title ni ularga ham ko'chiramiz.
+                    # Bir xil chat_id boshqa userlarda ham bo'lsa, ma'lumotlarni ularga ham ko'chiramiz.
                     same_chat_groups = list(
                         db.execute(select(Group).where(Group.telegram_chat_id == g.telegram_chat_id)).scalars().all()
                     )
@@ -87,6 +108,8 @@ async def sync_groups_titles_for_ids(db: Session, group_ids: list[uuid.UUID]) ->
                         x.title = g.title
                         if g.username:
                             x.username = g.username
+                        if g.tg_access_hash is not None:
+                            x.tg_access_hash = g.tg_access_hash
                         x.last_checked_at = datetime.now(timezone.utc)
                         db.add(x)
         finally:

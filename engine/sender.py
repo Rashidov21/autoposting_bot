@@ -76,6 +76,9 @@ class _SendOutcome:
     warmup_inc: int = 0
     retry_count: int = 0
     slowmode_wait_seconds: int = 0
+    # When entity resolution succeeds, carry the freshly-resolved access_hash
+    # back to run_campaign_round so it can be persisted to the DB.
+    group_access_hash: int | None = None
 
 
 def _mark_account_banned(db: Session, acc: Account, msg: str) -> None:
@@ -194,7 +197,15 @@ async def _account_worker(
             ) * wm
             peer = int(g.telegram_chat_id)
             try:
-                entity = await resolve_entity(client, peer, entity_cache)
+                entity = await resolve_entity(
+                    client,
+                    peer,
+                    entity_cache,
+                    username=g.username or None,
+                    access_hash=g.tg_access_hash or None,
+                )
+                # Persist any newly-resolved access_hash back to the DB via outcome.
+                resolved_access_hash: int | None = getattr(entity, "access_hash", None)
                 await ensure_joined_entity(client, entity, joined_cache)
                 meta = await safe_send_message(
                     client,
@@ -218,6 +229,7 @@ async def _account_worker(
                         retry_count=meta.retry_count,
                         slowmode_wait_seconds=meta.slowmode_wait_seconds,
                         flood_wait_seconds=meta.flood_wait_seconds,
+                        group_access_hash=resolved_access_hash,
                     )
                 )
                 logger.info(
@@ -426,6 +438,12 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
                 g = group_map.get(out.group_id)
                 if g:
                     _mark_group_invalid(db, g, out.error_message or "GROUP_INVALID")
+            # Persist freshly-resolved access_hash so future rounds skip entity lookup.
+            if out.group_access_hash is not None:
+                g = group_map.get(out.group_id)
+                if g and g.tg_access_hash != out.group_access_hash:
+                    g.tg_access_hash = out.group_access_hash
+                    db.add(g)
             db.add(
                 SendLog(
                     campaign_id=campaign.id,

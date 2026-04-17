@@ -98,6 +98,7 @@ class Group(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     telegram_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tg_access_hash: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     title: Mapped[Optional[str]] = mapped_column(String(512))
     username: Mapped[Optional[str]] = mapped_column(String(255))
     is_valid: Mapped[bool] = mapped_column(Boolean, default=True)

@@ -59,6 +59,7 @@ CREATE TABLE groups (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     telegram_chat_id BIGINT NOT NULL,
+    tg_access_hash BIGINT DEFAULT NULL,    -- MTProto access_hash; required by Telethon to resolve channels
     title VARCHAR(512),
     username VARCHAR(255),
     is_valid BOOLEAN NOT NULL DEFAULT TRUE,
