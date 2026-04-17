@@ -9,6 +9,7 @@ from telethon.sessions import StringSession
 from app.core.config import get_settings
 from app.core.security import decrypt_text
 from app.db.models import Account, Proxy
+from engine.device_profile import device_params
 
 
 def build_client(account: Account, proxy: Proxy | None) -> TelegramClient:
@@ -28,6 +29,7 @@ def build_client(account: Account, proxy: Proxy | None) -> TelegramClient:
         flood_sleep_threshold=24,
         request_retries=3,
         auto_reconnect=False,
+        **device_params(account.id),
     )
 
     if account.session_enc:

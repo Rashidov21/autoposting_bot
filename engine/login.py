@@ -13,6 +13,7 @@ from app.core.config import get_settings
 from app.core.security import encrypt_text
 from app.db.models import Account, Proxy
 from engine.client_factory import session_file_path
+from engine.device_profile import device_params
 from engine.telethon_proxy import proxy_tuple
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,11 @@ async def send_login_code(account: Account, proxy: Proxy | None, phone: str) -> 
     api_id, api_hash = settings.telethon_api
     session = StringSession()
     proxy_arg = proxy_tuple(proxy) if proxy else None
-    client = TelegramClient(session, api_id, api_hash, proxy=proxy_arg)
+    client = TelegramClient(
+        session, api_id, api_hash,
+        proxy=proxy_arg,
+        **device_params(account.id),
+    )
     await client.connect()
     try:
         sent = await client.send_code_request(phone)
@@ -65,7 +70,11 @@ async def complete_login(account: Account, proxy: Proxy | None, phone: str, code
 
     session = StringSession(data["session"])
     proxy_arg = proxy_tuple(proxy) if proxy else None
-    client = TelegramClient(session, api_id, api_hash, proxy=proxy_arg)
+    client = TelegramClient(
+        session, api_id, api_hash,
+        proxy=proxy_arg,
+        **device_params(account.id),
+    )
     await client.connect()
     try:
         code_for_api = normalize_login_code(code)
