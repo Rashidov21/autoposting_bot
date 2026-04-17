@@ -72,6 +72,15 @@ class Settings(BaseSettings):
 
     # Yuborish — performance va barqarorlik
     sender_log_commit_batch: int = Field(default=12, ge=1, le=500)
+    sender_message_delay_min_seconds: float = Field(default=2.0, ge=0.5, le=30.0)
+    sender_message_delay_max_seconds: float = Field(default=5.0, ge=1.0, le=60.0)
+    sender_burst_min_messages: int = Field(default=20, ge=5, le=200)
+    sender_burst_max_messages: int = Field(default=30, ge=5, le=300)
+    sender_burst_pause_min_seconds: float = Field(default=30.0, ge=5.0, le=300.0)
+    sender_burst_pause_max_seconds: float = Field(default=60.0, ge=5.0, le=600.0)
+    sender_retry_slowmode_retries: int = Field(default=1, ge=0, le=5)
+    sender_retry_flood_retries: int = Field(default=2, ge=0, le=8)
+    sender_entity_cache_size: int = Field(default=500, ge=50, le=5000)
     schedule_due_campaigns_batch_limit: int = Field(default=300, ge=10, le=5000)
     campaign_lock_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
     campaign_soft_time_limit_seconds: int = Field(default=2400, ge=60, le=7200)

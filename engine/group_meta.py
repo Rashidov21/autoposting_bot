@@ -10,6 +10,7 @@ from telethon import TelegramClient
 
 from app.db.models import Account, Group, Proxy
 from engine.client_factory import build_client
+from engine.telegram_helpers import EntityCache, resolve_entity
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +41,17 @@ async def sync_groups_titles_for_ids(db: Session, group_ids: list[uuid.UUID]) ->
         by_user.setdefault(g.user_id, []).append(g)
 
     for uid, glist in by_user.items():
-        acc = db.execute(
-            select(Account).where(Account.user_id == uid, Account.status == "active")
-        ).scalar_one_or_none()
+        # scalar_one_or_none bu yerda xavfli: foydalanuvchida bir nechta active account bo'lishi mumkin.
+        # Shuning uchun birinchi mavjud active account olinadi.
+        acc = (
+            db.execute(select(Account).where(Account.user_id == uid, Account.status == "active"))
+            .scalars()
+            .first()
+        )
         # Fallback: userda active akkaunt bo'lmasa, tizimdagi istalgan active akkaunt bilan sinab ko'ramiz.
         if not acc:
-            acc = db.execute(select(Account).where(Account.status == "active")).scalar_one_or_none()
+            # Tizimda ham bir nechta active account bo'lishi mumkin.
+            acc = db.execute(select(Account).where(Account.status == "active")).scalars().first()
         if not acc:
             continue
         proxy = db.get(Proxy, acc.proxy_id) if acc.proxy_id else None
@@ -58,8 +64,19 @@ async def sync_groups_titles_for_ids(db: Session, group_ids: list[uuid.UUID]) ->
         try:
             if not await client.is_user_authorized():
                 continue
+            cache = EntityCache(max_size=300)
             for g in glist:
-                await sync_group_title(client, g)
+                try:
+                    ent = await resolve_entity(client, int(g.telegram_chat_id), cache)
+                    title = getattr(ent, "title", None) or getattr(ent, "first_name", None)
+                    uname = getattr(ent, "username", None)
+                    if title:
+                        g.title = title[:512]
+                    if uname:
+                        g.username = uname[:255]
+                    g.last_checked_at = datetime.now(timezone.utc)
+                except Exception as e:
+                    logger.info("Guruh nomi olinmadi peer=%s: %s", g.telegram_chat_id, e)
                 db.add(g)
                 if g.title:
                     # Bir xil chat_id boshqa userlarda ham bo'lsa, title ni ularga ham ko'chiramiz.

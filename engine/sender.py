@@ -4,14 +4,13 @@ import asyncio
 import logging
 import random
 import uuid
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import redis
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
-from telethon import TelegramClient, errors
+from telethon import errors
 
 from app.core.config import get_settings
 from app.db.models import (
@@ -21,17 +20,12 @@ from app.db.models import (
     CampaignGroup,
     Group,
     Proxy,
-    Schedule,
     SendLog,
 )
-from engine.anti_ban import (
-    maybe_skip_group,
-    random_delay,
-    shuffle_order,
-    vary_message_text,
-    warm_up_multiplier,
-)
+from app.db.models import Schedule
+from engine.anti_ban import maybe_skip_group, shuffle_order, vary_message_text, warm_up_multiplier
 from engine.client_factory import build_client
+from engine.telegram_helpers import EntityCache, ensure_joined_entity, resolve_entity, safe_send_message
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +48,6 @@ def _release_campaign_lock(r: redis.Redis, campaign_id: uuid.UUID) -> None:
 
 @dataclass
 class _BatchCommitter:
-    """DB commit sonini kamaytirish (throughput), lekin flush() bilan yakuniy barqarorlik."""
-
     db: Session
     batch: int
     _pending: int = 0
@@ -67,31 +59,23 @@ class _BatchCommitter:
             self._pending = 0
 
     def finalize(self) -> None:
-        """Har doim commit — oxirgi `sched` yangilanishi ham saqlansin."""
         self.db.commit()
         self._pending = 0
 
 
-async def _send_one(
-    client: TelegramClient,
-    peer: int,
-    text: str,
-    min_d: float,
-    max_d: float,
-    warm_mult: float,
-    *,
-    typing_probability: float,
-    pause_factor: float,
-) -> None:
-    lo = min_d * warm_mult
-    hi = max_d * warm_mult
-    delay = random_delay(lo, hi)
-    if random.random() < typing_probability:
-        async with client.action(peer, "typing"):
-            await asyncio.sleep(delay)
-    else:
-        await asyncio.sleep(delay * pause_factor)
-    await client.send_message(peer, text)
+@dataclass
+class _SendOutcome:
+    account_id: uuid.UUID
+    group_id: uuid.UUID | None
+    status: str
+    error_code: str | None = None
+    error_message: str | None = None
+    mark_group_invalid: bool = False
+    account_banned: bool = False
+    flood_wait_seconds: int = 0
+    warmup_inc: int = 0
+    retry_count: int = 0
+    slowmode_wait_seconds: int = 0
 
 
 def _mark_account_banned(db: Session, acc: Account, msg: str) -> None:
@@ -114,7 +98,6 @@ def _plan_assignments(
     *,
     rotation: str,
 ) -> tuple[list[tuple[Group, Account]], list[SendLog]]:
-    """(guruh, akkaunt) juftliklari va skip loglari."""
     rr_idx = random.randint(0, len(accounts) - 1) if rotation == "random" else 0
     per_account_counts: dict[uuid.UUID, int] = {a.id: 0 for a in accounts}
     skipped_logs: list[SendLog] = []
@@ -153,23 +136,40 @@ def _plan_assignments(
     return assignments, skipped_logs
 
 
-async def _send_for_account(
-    db: Session,
+def _group_queue_map(
+    assignments: list[tuple[Group, Account]],
+) -> dict[uuid.UUID, asyncio.Queue[Group]]:
+    out: dict[uuid.UUID, asyncio.Queue[Group]] = {}
+    for g, acc in assignments:
+        q = out.setdefault(acc.id, asyncio.Queue())
+        q.put_nowait(g)
+    return out
+
+
+async def _account_worker(
     campaign: Campaign,
     acc: Account,
-    groups: list[Group],
-    proxies: dict[uuid.UUID, Proxy | None],
-    committer: _BatchCommitter,
-) -> None:
-    proxy = proxies.get(acc.proxy_id) if acc.proxy_id else None
+    queue: asyncio.Queue[Group],
+    proxy: Proxy | None,
+    settings,
+) -> list[_SendOutcome]:
+    outcomes: list[_SendOutcome] = []
+    sent_by_worker = 0
+    pause_every = random.randint(settings.sender_burst_min_messages, settings.sender_burst_max_messages)
+    account_lock = asyncio.Lock()
+    chat_next_allowed_at: dict[int, float] = {}
+    joined_cache: set[int] = set()
+    entity_cache = EntityCache(max_size=settings.sender_entity_cache_size)
+    warmup_sent = acc.warm_up_sent
+
     try:
         client = build_client(acc, proxy)
     except Exception as e:
-        logger.exception("Client build account=%s", acc.id)
-        for g in groups:
-            db.add(
-                SendLog(
-                    campaign_id=campaign.id,
+        logger.exception("client_build_failed account=%s", acc.id)
+        while not queue.empty():
+            g = queue.get_nowait()
+            outcomes.append(
+                _SendOutcome(
                     account_id=acc.id,
                     group_id=g.id,
                     status="fail",
@@ -177,111 +177,145 @@ async def _send_for_account(
                     error_message=str(e),
                 )
             )
-            committer.step()
-        return
-
-    s = get_settings()
-    typing_p = s.typing_simulation_probability
-    pause_f = s.post_typing_pause_factor
+        return outcomes
 
     await client.connect()
     try:
         if not await client.is_user_authorized():
             raise RuntimeError("Session avtorizatsiya qilinmagan")
 
-        for g in groups:
+        while not queue.empty():
+            g = await queue.get()
             text = vary_message_text(campaign.message_text)
-            wm = warm_up_multiplier(acc.warm_up_sent)
+            wm = warm_up_multiplier(warmup_sent)
+            pre_send_delay = random.uniform(
+                settings.sender_message_delay_min_seconds,
+                settings.sender_message_delay_max_seconds,
+            ) * wm
             peer = int(g.telegram_chat_id)
             try:
-                await _send_one(
+                entity = await resolve_entity(client, peer, entity_cache)
+                await ensure_joined_entity(client, entity, joined_cache)
+                meta = await safe_send_message(
                     client,
-                    peer,
+                    entity,
                     text,
-                    campaign.min_delay_seconds,
-                    campaign.max_delay_seconds,
-                    wm,
-                    typing_probability=typing_p,
-                    pause_factor=pause_f,
+                    account_lock=account_lock,
+                    chat_next_allowed_at=chat_next_allowed_at,
+                    typing_probability=settings.typing_simulation_probability,
+                    pre_send_delay_seconds=pre_send_delay,
+                    slowmode_retries=settings.sender_retry_slowmode_retries,
+                    flood_retries=settings.sender_retry_flood_retries,
                 )
-                acc.warm_up_sent = acc.warm_up_sent + 1
-                db.add(acc)
-                db.add(
-                    SendLog(
-                        campaign_id=campaign.id,
+                warmup_sent += 1
+                sent_by_worker += 1
+                outcomes.append(
+                    _SendOutcome(
                         account_id=acc.id,
                         group_id=g.id,
                         status="success",
+                        warmup_inc=1,
+                        retry_count=meta.retry_count,
+                        slowmode_wait_seconds=meta.slowmode_wait_seconds,
+                        flood_wait_seconds=meta.flood_wait_seconds,
                     )
                 )
-                committer.step()
+                logger.info(
+                    "send_success",
+                    extra={
+                        "campaign_id": str(campaign.id),
+                        "account_id": str(acc.id),
+                        "group_id": str(g.id),
+                        "retry_count": meta.retry_count,
+                    },
+                )
+                if sent_by_worker >= pause_every:
+                    long_pause = random.uniform(
+                        settings.sender_burst_pause_min_seconds,
+                        settings.sender_burst_pause_max_seconds,
+                    )
+                    await asyncio.sleep(long_pause)
+                    sent_by_worker = 0
+                    pause_every = random.randint(
+                        settings.sender_burst_min_messages,
+                        settings.sender_burst_max_messages,
+                    )
+            except errors.SlowModeWaitError as e:
+                outcomes.append(
+                    _SendOutcome(
+                        account_id=acc.id,
+                        group_id=g.id,
+                        status="fail",
+                        error_code="SLOWMODE_WAIT",
+                        error_message=str(e),
+                        slowmode_wait_seconds=max(int(e.seconds), 1),
+                    )
+                )
             except errors.FloodWaitError as e:
-                acc.flood_wait_until = _utcnow() + timedelta(seconds=int(e.seconds) + random.randint(1, 10))
-                db.add(acc)
-                db.add(
-                    SendLog(
-                        campaign_id=campaign.id,
+                outcomes.append(
+                    _SendOutcome(
                         account_id=acc.id,
                         group_id=g.id,
                         status="fail",
                         error_code="FLOOD_WAIT",
                         error_message=str(e),
+                        flood_wait_seconds=max(int(e.seconds), 1),
                     )
                 )
-                committer.step()
-                logger.warning("FloodWait account=%s — qolgan guruhlar keyingi tsiklda", acc.id)
                 break
             except (errors.UserDeactivatedError, errors.UserDeactivatedBanError, errors.AuthKeyUnregisteredError) as e:
-                _mark_account_banned(db, acc, str(e))
-                db.add(
-                    SendLog(
-                        campaign_id=campaign.id,
+                outcomes.append(
+                    _SendOutcome(
                         account_id=acc.id,
                         group_id=g.id,
                         status="fail",
                         error_code="ACCOUNT_BANNED",
                         error_message=str(e),
+                        account_banned=True,
                     )
                 )
-                committer.step()
                 break
-            except errors.ChatWriteForbiddenError as e:
-                _mark_group_invalid(db, g, str(e))
-                db.add(
-                    SendLog(
-                        campaign_id=campaign.id,
+            except (errors.ChatWriteForbiddenError, errors.ChannelPrivateError, errors.ChatAdminRequiredError) as e:
+                outcomes.append(
+                    _SendOutcome(
                         account_id=acc.id,
                         group_id=g.id,
                         status="fail",
                         error_code="GROUP_INVALID",
                         error_message=str(e),
+                        mark_group_invalid=True,
                     )
                 )
-                committer.step()
             except Exception as e:
                 msg = str(e).lower()
-                if "private" in msg or "kicked" in msg or "not part" in msg:
-                    _mark_group_invalid(db, g, str(e))
-                logger.exception("Yuborish account=%s peer=%s", acc.id, g.id)
-                db.add(
-                    SendLog(
-                        campaign_id=campaign.id,
+                mark_invalid = "private" in msg or "kicked" in msg or "not part" in msg
+                outcomes.append(
+                    _SendOutcome(
                         account_id=acc.id,
                         group_id=g.id,
                         status="fail",
                         error_code="UNKNOWN",
                         error_message=str(e),
+                        mark_group_invalid=mark_invalid,
                     )
                 )
-                committer.step()
+                logger.exception("send_unknown account=%s group=%s", acc.id, g.id)
     finally:
         await client.disconnect()
 
+    if warmup_sent > acc.warm_up_sent:
+        outcomes.append(
+            _SendOutcome(
+                account_id=acc.id,
+                group_id=None,
+                status="meta",
+                warmup_inc=warmup_sent - acc.warm_up_sent,
+            )
+        )
+    return outcomes
+
 
 async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
-    """
-    Bitta aylanma: akkaunt bo'yicha bitta MTProto ulanish, guruhlar ketma-ketligi aralash.
-    """
     campaign = db.execute(
         select(Campaign).where(Campaign.id == campaign_id).options(selectinload(Campaign.schedule))
     ).scalar_one_or_none()
@@ -332,38 +366,82 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
     rotation = campaign.rotation or "round_robin"
     groups_shuffled = shuffle_order([g for g in groups if g.is_valid])
     assignments, skip_logs = _plan_assignments(groups_shuffled, accounts, campaign, rotation=rotation)
-
     for sl in skip_logs:
         db.add(sl)
         committer.step()
-
     if not assignments:
         finish_schedule()
         return
 
-    by_account: dict[uuid.UUID, list[Group]] = defaultdict(list)
     account_map: dict[uuid.UUID, Account] = {a.id: a for a in accounts}
-    for g, acc in assignments:
-        by_account[acc.id].append(g)
-
-    used_accounts = [account_map[aid] for aid in by_account.keys() if aid in account_map]
+    group_queues = _group_queue_map(assignments)
+    used_accounts = [account_map[aid] for aid in group_queues.keys() if aid in account_map]
     proxy_ids = {a.proxy_id for a in used_accounts if a.proxy_id}
     proxies: dict[uuid.UUID, Proxy | None] = {}
     for pid in proxy_ids:
         proxies[pid] = db.get(Proxy, pid)
 
-    for acc_id in shuffle_order(list(by_account.keys())):
+    worker_tasks: list[asyncio.Task[list[_SendOutcome]]] = []
+    for acc_id in shuffle_order(list(group_queues.keys())):
         acc = account_map.get(acc_id)
         if not acc or acc.status != "active":
             continue
-        await _send_for_account(
-            db,
-            campaign,
-            acc,
-            by_account[acc_id],
-            proxies,
-            committer,
+        worker_tasks.append(
+            asyncio.create_task(
+                _account_worker(
+                    campaign,
+                    acc,
+                    group_queues[acc_id],
+                    proxies.get(acc.proxy_id) if acc.proxy_id else None,
+                    settings,
+                )
+            )
         )
+    worker_results = await asyncio.gather(*worker_tasks, return_exceptions=True)
+
+    group_map: dict[uuid.UUID, Group] = {g.id: g for g in groups}
+    for idx, result in enumerate(worker_results):
+        if isinstance(result, Exception):
+            logger.exception("account_worker_failed idx=%s: %s", idx, result)
+            continue
+        for out in result:
+            if out.status == "meta":
+                acc = account_map.get(out.account_id)
+                if acc and out.warmup_inc > 0:
+                    acc.warm_up_sent += out.warmup_inc
+                    db.add(acc)
+                continue
+            if not out.group_id:
+                continue
+            if out.account_banned:
+                acc = account_map.get(out.account_id)
+                if acc:
+                    _mark_account_banned(db, acc, out.error_message or "ACCOUNT_BANNED")
+            if out.flood_wait_seconds > 0:
+                acc = account_map.get(out.account_id)
+                if acc:
+                    acc.flood_wait_until = _utcnow() + timedelta(seconds=out.flood_wait_seconds + random.randint(1, 10))
+                    db.add(acc)
+            if out.mark_group_invalid:
+                g = group_map.get(out.group_id)
+                if g:
+                    _mark_group_invalid(db, g, out.error_message or "GROUP_INVALID")
+            db.add(
+                SendLog(
+                    campaign_id=campaign.id,
+                    account_id=out.account_id,
+                    group_id=out.group_id,
+                    status=out.status,
+                    error_code=out.error_code,
+                    error_message=out.error_message,
+                    meta={
+                        "retry_count": out.retry_count,
+                        "slowmode_wait_seconds": out.slowmode_wait_seconds,
+                        "flood_wait_seconds": out.flood_wait_seconds,
+                    },
+                )
+            )
+            committer.step()
 
     finish_schedule()
 
