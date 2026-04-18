@@ -107,12 +107,13 @@ def _campaign_started_user_text(
 def _group_rows(
     groups: list[Group],
     selected: set[str],
-) -> list[tuple[str, str, bool]]:
-    rows: list[tuple[str, str, bool]] = []
+) -> list[tuple[str, str, bool, bool]]:
+    """Returns (id, label, selected, is_valid) tuples."""
+    rows: list[tuple[str, str, bool, bool]] = []
     for g in groups:
         gid = str(g.id)
         label = _format_group_label(g)[:62]
-        rows.append((gid, label, gid in selected))
+        rows.append((gid, label, gid in selected, bool(g.is_valid)))
     return rows
 
 
@@ -554,6 +555,11 @@ async def grp_add(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(CampaignStates.enter_group_chat_id)
     await callback.message.answer(MSG_ENTER_GROUP_CHAT_ID, reply_markup=reply_main_menu(callback.from_user.id))
     await callback.answer()
+
+
+@router.callback_query(StateFilter(CampaignStates.select_groups), F.data == "grp:invalid")
+async def grp_invalid_tap(callback: CallbackQuery) -> None:
+    await callback.answer("Bu guruh faol emas (xatolik yuz bergan)", show_alert=True)
 
 
 @router.callback_query(StateFilter(CampaignStates.select_groups), F.data == "grp:cancel")

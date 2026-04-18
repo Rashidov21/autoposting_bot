@@ -96,18 +96,32 @@ def groups_pick_kb(groups: list[Group], selected: set[str]) -> InlineKeyboardMar
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def groups_inline_kb(rows: list[tuple[str, str, bool]]) -> InlineKeyboardMarkup:
-    """Kampaniya: grp:tog:, grp:del:, grp:add, grp:cancel, grp:done."""
+def groups_inline_kb(rows: list[tuple]) -> InlineKeyboardMarkup:
+    """Kampaniya: grp:tog:, grp:del:, grp:add, grp:cancel, grp:done.
+    rows elementi: (gid, label, selected) yoki (gid, label, selected, is_valid).
+    is_valid=False guruhlar ❌ belgisi bilan, bosilganda alert chiqadi.
+    """
     ib: list[list[InlineKeyboardButton]] = []
-    for gid, label, selected in rows:
-        mark = "✅" if selected else "☐"
+    for row in rows:
+        gid, label = row[0], row[1]
+        selected = row[2] if len(row) > 2 else False
+        is_valid = row[3] if len(row) > 3 else True
         short_label = (label or "")[:60]
-        ib.append(
-            [
-                InlineKeyboardButton(text=f"{mark} {short_label}", callback_data=f"grp:tog:{gid}"),
-                InlineKeyboardButton(text="🗑", callback_data=f"grp:del:{gid}"),
-            ]
-        )
+        if not is_valid:
+            ib.append(
+                [
+                    InlineKeyboardButton(text=f"❌ {short_label}", callback_data="grp:invalid"),
+                    InlineKeyboardButton(text="🗑", callback_data=f"grp:del:{gid}"),
+                ]
+            )
+        else:
+            mark = "✅" if selected else "☐"
+            ib.append(
+                [
+                    InlineKeyboardButton(text=f"{mark} {short_label}", callback_data=f"grp:tog:{gid}"),
+                    InlineKeyboardButton(text="🗑", callback_data=f"grp:del:{gid}"),
+                ]
+            )
     ib.append([InlineKeyboardButton(text="➕ Guruh chat ID", callback_data="grp:add")])
     ib.append(
         [
