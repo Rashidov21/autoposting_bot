@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 from telethon import errors
 
 from app.core.config import get_settings
+from app.core.security import encrypt_text
 from app.db.models import (
     Account,
     Campaign,
@@ -79,6 +80,9 @@ class _SendOutcome:
     # When entity resolution succeeds, carry the freshly-resolved access_hash
     # back to run_campaign_round so it can be persisted to the DB.
     group_access_hash: int | None = None
+    # Updated StringSession string after get_dialogs(); saved to DB so future
+    # rounds benefit from the populated entity cache without calling get_dialogs again.
+    session_update: str | None = None
 
 
 def _mark_account_banned(db: Session, acc: Account, msg: str) -> None:
@@ -183,9 +187,29 @@ async def _account_worker(
         return outcomes
 
     await client.connect()
+    _new_session_str: str | None = None
     try:
         if not await client.is_user_authorized():
             raise RuntimeError("Session avtorizatsiya qilinmagan")
+
+        # Populate Telethon's in-memory entity cache so PeerChannel lookups succeed
+        # for all groups the account is a member of, even without stored access_hash.
+        # The updated StringSession (which includes the entity table) is saved back to
+        # DB afterwards, so subsequent rounds skip this call for already-known groups.
+        try:
+            await client.get_dialogs(limit=None)
+            _new_session_str = client.session.save()
+            logger.info(
+                "get_dialogs_ok account=%s",
+                acc.id,
+                extra={"account_id": str(acc.id)},
+            )
+        except Exception as _dlg_exc:
+            logger.warning(
+                "get_dialogs_failed account=%s: %s",
+                acc.id, _dlg_exc,
+                extra={"account_id": str(acc.id)},
+            )
 
         while not queue.empty():
             g = await queue.get()
@@ -315,15 +339,15 @@ async def _account_worker(
     finally:
         await client.disconnect()
 
-    if warmup_sent > acc.warm_up_sent:
-        outcomes.append(
-            _SendOutcome(
-                account_id=acc.id,
-                group_id=None,
-                status="meta",
-                warmup_inc=warmup_sent - acc.warm_up_sent,
-            )
+    outcomes.append(
+        _SendOutcome(
+            account_id=acc.id,
+            group_id=None,
+            status="meta",
+            warmup_inc=warmup_sent - acc.warm_up_sent if warmup_sent > acc.warm_up_sent else 0,
+            session_update=_new_session_str,
         )
+    )
     return outcomes
 
 
@@ -419,9 +443,15 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
         for out in result:
             if out.status == "meta":
                 acc = account_map.get(out.account_id)
-                if acc and out.warmup_inc > 0:
-                    acc.warm_up_sent += out.warmup_inc
-                    db.add(acc)
+                if acc:
+                    if out.warmup_inc > 0:
+                        acc.warm_up_sent += out.warmup_inc
+                    if out.session_update:
+                        # Persist the refreshed StringSession so next round's
+                        # entity cache is pre-populated (avoids get_dialogs overhead).
+                        acc.session_enc = encrypt_text(out.session_update)
+                    if out.warmup_inc > 0 or out.session_update:
+                        db.add(acc)
                 continue
             if not out.group_id:
                 continue

@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from telethon import TelegramClient
 
+from app.core.security import encrypt_text
 from app.db.models import Account, Group, Proxy
 from engine.client_factory import build_client
 from engine.telegram_helpers import EntityCache, resolve_entity  # noqa: F401 (used in sync_groups_titles_for_ids)
@@ -76,6 +77,14 @@ async def sync_groups_titles_for_ids(db: Session, group_ids: list[uuid.UUID]) ->
         try:
             if not await client.is_user_authorized():
                 continue
+
+            # Populate session entity cache so PeerChannel lookups succeed
+            # for groups the account is a member of.
+            try:
+                await client.get_dialogs(limit=None)
+            except Exception as _dlg_exc:
+                logger.warning("get_dialogs failed sync titles user=%s: %s", uid, _dlg_exc)
+
             cache = EntityCache(max_size=300)
             for g in glist:
                 try:
@@ -112,5 +121,12 @@ async def sync_groups_titles_for_ids(db: Session, group_ids: list[uuid.UUID]) ->
                             x.tg_access_hash = g.tg_access_hash
                         x.last_checked_at = datetime.now(timezone.utc)
                         db.add(x)
+
+            # Persist the refreshed session so entity cache survives across calls.
+            try:
+                acc.session_enc = encrypt_text(client.session.save())
+                db.add(acc)
+            except Exception as _ses_exc:
+                logger.warning("session save failed sync titles user=%s: %s", uid, _ses_exc)
         finally:
             await client.disconnect()
