@@ -35,10 +35,11 @@ def get_engine() -> Engine:
 def _get_session_factory() -> sessionmaker:  # type: ignore[type-arg]
     global _SessionLocal
     if _SessionLocal is None:
+        engine = get_engine()  # lock tashqarisida — get_engine o'z lock ini ishlatadi
         with _lock:
             if _SessionLocal is None:
                 _SessionLocal = sessionmaker(
-                    bind=get_engine(),
+                    bind=engine,
                     autoflush=False,
                     autocommit=False,
                     expire_on_commit=False,
