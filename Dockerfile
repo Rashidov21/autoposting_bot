@@ -18,7 +18,12 @@ COPY engine engine
 COPY scripts scripts
 COPY schema.sql schema.sql
 
-RUN mkdir -p /app/sessions
+RUN mkdir -p /app/sessions \
+    && groupadd -r appuser \
+    && useradd -r -g appuser -d /app -s /sbin/nologin appuser \
+    && chown -R appuser:appuser /app
+
+USER appuser
 
 EXPOSE 8000
 

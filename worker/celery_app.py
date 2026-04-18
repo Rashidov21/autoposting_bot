@@ -35,6 +35,7 @@ celery_app.conf.update(
         "worker.tasks.schedule_due_campaigns": {"queue": settings.celery_scheduler_queue},
         "worker.tasks.purge_expired_demo_users_task": {"queue": settings.celery_scheduler_queue},
         "worker.tasks.subscription_reminder_task": {"queue": settings.celery_scheduler_queue},
+        "worker.tasks.prune_send_logs_task": {"queue": settings.celery_scheduler_queue},
     },
     # Uzoq MTProto vazifalar: boshqa workerlar bloklanmasin
     task_acks_late=True,
@@ -66,6 +67,11 @@ celery_app.conf.beat_schedule = {
     "subscription-reminders": {
         "task": "worker.tasks.subscription_reminder_task",
         "schedule": crontab(hour=8, minute=0),
+        "options": {"queue": settings.celery_scheduler_queue},
+    },
+    "prune-send-logs": {
+        "task": "worker.tasks.prune_send_logs_task",
+        "schedule": crontab(hour=3, minute=0),
         "options": {"queue": settings.celery_scheduler_queue},
     },
 }

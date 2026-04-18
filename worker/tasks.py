@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
-from app.db.models import Campaign, Schedule
+from app.db.models import Campaign, Schedule, SendLog
 from app.db.session import SessionLocal
 from app.core.config import get_settings
 from engine.sender import run_campaign_round_sync
@@ -76,7 +76,15 @@ def send_login_code_task(account_id: str, phone: str) -> None:
         if not acc:
             return
         proxy = db.get(Proxy, acc.proxy_id) if acc.proxy_id else None
-        asyncio.run(send_login_code(acc, proxy, phone))
+        try:
+            asyncio.run(send_login_code(acc, proxy, phone))
+        except Exception as exc:
+            err_msg = str(exc)[:512]
+            acc.last_error = f"Kod yuborish xatosi: {err_msg}"
+            db.add(acc)
+            db.commit()
+            logger.warning("send_login_code_task failed account=%s: %s", aid, exc)
+            raise
     finally:
         db.close()
 
@@ -176,8 +184,38 @@ def complete_login_task(account_id: str, phone: str, code: str) -> None:
         if not acc:
             return
         proxy = db.get(Proxy, acc.proxy_id) if acc.proxy_id else None
-        asyncio.run(complete_login(acc, proxy, phone, code.strip()))
-        db.add(acc)
+        try:
+            asyncio.run(complete_login(acc, proxy, phone, code.strip()))
+            db.add(acc)
+            db.commit()
+        except Exception as exc:
+            err_msg = str(exc)[:512]
+            acc.last_error = f"Login xatosi: {err_msg}"
+            db.add(acc)
+            db.commit()
+            logger.warning("complete_login_task failed account=%s: %s", aid, exc)
+            raise
+    finally:
+        db.close()
+
+
+@celery_app.task(name="worker.tasks.prune_send_logs_task")
+def prune_send_logs_task(retain_days: int = 30) -> int:
+    """send_logs jadvalidagi eski yozuvlarni o'chiradi (default: 30 kundan eski)."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retain_days)
+    db = SessionLocal()
+    try:
+        result = db.execute(
+            delete(SendLog).where(SendLog.created_at < cutoff)
+        )
+        deleted = int(result.rowcount or 0)
         db.commit()
+        if deleted:
+            logger.info("prune_send_logs_task deleted=%s rows older than %s days", deleted, retain_days)
+        return deleted
+    except Exception:
+        logger.exception("prune_send_logs_task")
+        db.rollback()
+        raise
     finally:
         db.close()

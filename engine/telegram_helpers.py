@@ -12,6 +12,8 @@ from telethon import TelegramClient, errors
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import Channel, Chat, InputPeerChannel, PeerChannel, PeerChat, User
 
+from app.core.config import get_settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -174,6 +176,8 @@ async def ensure_joined_entity(
 ) -> None:
     """
     Best-effort join for channels. If already joined or join is not possible, do not crash sender.
+    ChatWriteForbiddenError on JoinChannelRequest means broadcast channel — account is already a
+    member but cannot post; swallow it here so the send stage can give the real error.
     """
     peer_id = _entity_peer_id(entity)
     if not peer_id or peer_id in joined_cache:
@@ -188,6 +192,8 @@ async def ensure_joined_entity(
         errors.InviteHashExpiredError,
         errors.InviteHashInvalidError,
         errors.ChatAdminRequiredError,
+        errors.ChatWriteForbiddenError,
+        errors.UserBannedInChannelError,
     ):
         # Keep going; sender will fail at send stage and log proper reason.
         pass
@@ -211,7 +217,11 @@ async def safe_send_message(
     Send with Telegram-aware retries.
     - SlowMode: wait exact seconds, retry 1x
     - FloodWait: exponential wait (1x, 2x, 4x), retry limited times
+    - Non-retryable errors (ChatWriteForbidden, ChannelPrivate, etc.) re-raised immediately.
     """
+    settings = get_settings()
+    typing_pause = max(0.3, settings.post_typing_pause_factor * 2.0)
+
     meta = SendAttemptMeta()
     peer_id = _entity_peer_id(entity)
     retries_slow = 0
@@ -230,9 +240,20 @@ async def safe_send_message(
                 await asyncio.sleep(pre_send_delay_seconds)
                 if random.random() < typing_probability and _can_use_typing(entity):
                     async with client.action(entity, "typing"):
-                        await asyncio.sleep(random.uniform(0.3, 1.1))
+                        await asyncio.sleep(typing_pause + random.uniform(0.0, 0.5))
                 await client.send_message(entity, text)
                 return meta
+            except (
+                errors.ChatWriteForbiddenError,
+                errors.ChannelPrivateError,
+                errors.ChatAdminRequiredError,
+                errors.UserBannedInChannelError,
+                errors.UserDeactivatedError,
+                errors.UserDeactivatedBanError,
+                errors.AuthKeyUnregisteredError,
+            ):
+                # These errors will never self-resolve — re-raise immediately without retry.
+                raise
             except errors.SlowModeWaitError as e:
                 wait_seconds = max(int(e.seconds), 1)
                 meta.slowmode_wait_seconds = wait_seconds

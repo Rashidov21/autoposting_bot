@@ -7,7 +7,6 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-import redis
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 from telethon import errors
@@ -26,6 +25,7 @@ from app.db.models import (
 from app.db.models import Schedule
 from engine.anti_ban import maybe_skip_group, shuffle_order, vary_message_text, warm_up_multiplier
 from engine.client_factory import build_client
+from engine.redis_pool import get_redis
 from engine.telegram_helpers import EntityCache, ensure_joined_entity, resolve_entity, safe_send_message
 
 logger = logging.getLogger(__name__)
@@ -39,11 +39,11 @@ def _campaign_lock_key(campaign_id: uuid.UUID) -> str:
     return f"campaign:exec:{campaign_id}"
 
 
-def _try_acquire_campaign_lock(r: redis.Redis, campaign_id: uuid.UUID, ttl: int) -> bool:
+def _try_acquire_campaign_lock(r, campaign_id: uuid.UUID, ttl: int) -> bool:
     return bool(r.set(_campaign_lock_key(campaign_id), "1", nx=True, ex=ttl))
 
 
-def _release_campaign_lock(r: redis.Redis, campaign_id: uuid.UUID) -> None:
+def _release_campaign_lock(r, campaign_id: uuid.UUID) -> None:
     r.delete(_campaign_lock_key(campaign_id))
 
 
@@ -190,7 +190,19 @@ async def _account_worker(
     _new_session_str: str | None = None
     try:
         if not await client.is_user_authorized():
-            raise RuntimeError("Session avtorizatsiya qilinmagan")
+            logger.warning("account_unauthorized account=%s", acc.id)
+            while not queue.empty():
+                g = queue.get_nowait()
+                outcomes.append(
+                    _SendOutcome(
+                        account_id=acc.id,
+                        group_id=g.id,
+                        status="fail",
+                        error_code="ACCOUNT_UNAUTHORIZED",
+                        error_message="Session avtorizatsiya qilinmagan",
+                    )
+                )
+            return outcomes
 
         # Populate Telethon's in-memory entity cache so PeerChannel lookups succeed
         # for all groups the account is a member of, even without stored access_hash.
@@ -496,7 +508,7 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
 
 def run_campaign_round_sync(db: Session, campaign_id: uuid.UUID) -> None:
     settings = get_settings()
-    r = redis.from_url(settings.redis_url)
+    r = get_redis()
     if not _try_acquire_campaign_lock(r, campaign_id, settings.campaign_lock_ttl_seconds):
         logger.info("Kampaniya bajarilmoqda, takroriy ishga tushirish o'tkazildi: %s", campaign_id)
         return

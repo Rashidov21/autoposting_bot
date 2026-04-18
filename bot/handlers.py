@@ -102,6 +102,11 @@ async def campaign_message(message: Message, state: FSMContext) -> None:
         )
 
 
+@router.callback_query(CampaignStates.select_groups, F.data == "grp:invalid")
+async def cb_group_invalid(query: CallbackQuery) -> None:
+    await query.answer("Bu guruh faol emas (xatolik yuz bergan)", show_alert=True)
+
+
 @router.callback_query(CampaignStates.select_groups, F.data.startswith("grp:t:"))
 async def cb_group_toggle(query: CallbackQuery, state: FSMContext) -> None:
     if query.message is None:

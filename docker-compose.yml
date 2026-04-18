@@ -3,9 +3,30 @@
 # POSTGRES_PASSWORD .env orqali (POSTGRES_PASSWORD) — yangi o'rnatishda kuchli parol qo'ying.
 # Mavjud pgdata bilan parolni o'zgartirish: DB ichida ALTER USER yoki yangi volume (ma'lumot yo'qoladi).
 
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-worker-env: &worker-env
+  DATABASE_URL: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/autopost
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: redis://redis:6379/1
+  CELERY_RESULT_BACKEND: redis://redis:6379/2
+  SESSIONS_DIR: /app/sessions
+
+x-depends-full: &depends-full
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
 services:
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -19,30 +40,32 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    logging: *default-logging
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "127.0.0.1:6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging: *default-logging
 
   api:
     build: .
+    restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/autopost
-      REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
-      SESSIONS_DIR: /app/sessions
+      <<: *worker-env
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
       - sessions:/app/sessions
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
+    <<: *depends-full
+    logging: *default-logging
 
   worker_campaign:
     build: .
@@ -50,18 +73,11 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/autopost
-      REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
-      SESSIONS_DIR: /app/sessions
+      <<: *worker-env
     volumes:
       - sessions:/app/sessions
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
+    <<: *depends-full
+    logging: *default-logging
 
   worker_aux:
     build: .
@@ -69,35 +85,15 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/autopost
-      REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
-      SESSIONS_DIR: /app/sessions
+      <<: *worker-env
     volumes:
       - sessions:/app/sessions
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
+    <<: *depends-full
+    logging: *default-logging
 
   beat:
     build: .
     command: celery -A worker.celery_app:celery_app beat -l info
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/autopost
-      REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
-    depends_on:
-      redis:
-        condition: service_started
-
-  bot:
-    build: .
-    command: python -m bot.main
     restart: unless-stopped
     env_file: .env
     environment:
@@ -105,14 +101,22 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
-      SESSIONS_DIR: /app/sessions
+    depends_on:
+      redis:
+        condition: service_healthy
+    logging: *default-logging
+
+  bot:
+    build: .
+    command: python -m bot.main
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *worker-env
     volumes:
       - sessions:/app/sessions
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
+    <<: *depends-full
+    logging: *default-logging
 
 volumes:
   pgdata:

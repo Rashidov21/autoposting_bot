@@ -75,14 +75,22 @@ def _group_button_label(g: Group) -> str:
 
 
 def groups_pick_kb(groups: list[Group], selected: set[str]) -> InlineKeyboardMarkup:
-    """Eski callback sxema: grp:t:, grp:manual, grp:go."""
+    """Eski callback sxema: grp:t:, grp:manual, grp:go.
+    is_valid=False guruhlar ❌ belgisi bilan ko'rsatiladi va tanlab bo'lmaydi.
+    """
     rows: list[list[InlineKeyboardButton]] = []
     for g in groups:
-        mark = "✅" if str(g.id) in selected else "☐"
-        label = _group_button_label(g)
-        rows.append(
-            [InlineKeyboardButton(text=f"{mark} {label}", callback_data=f"grp:t:{g.id}")]
-        )
+        if not g.is_valid:
+            label = _group_button_label(g)
+            rows.append(
+                [InlineKeyboardButton(text=f"❌ {label}", callback_data="grp:invalid")]
+            )
+        else:
+            mark = "✅" if str(g.id) in selected else "☐"
+            label = _group_button_label(g)
+            rows.append(
+                [InlineKeyboardButton(text=f"{mark} {label}", callback_data=f"grp:t:{g.id}")]
+            )
     rows.append([InlineKeyboardButton(text="📝 Qo'lda chat ID kiritish", callback_data="grp:manual")])
     rows.append([InlineKeyboardButton(text="Davom etish »", callback_data="grp:go")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

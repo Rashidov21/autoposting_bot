@@ -5,7 +5,6 @@ import logging
 import uuid
 from typing import Any
 
-import redis
 from telethon import TelegramClient, errors
 from telethon.sessions import StringSession
 
@@ -14,13 +13,14 @@ from app.core.security import encrypt_text
 from app.db.models import Account, Proxy
 from engine.client_factory import session_file_path
 from engine.device_profile import device_params
+from engine.redis_pool import get_redis
 from engine.telethon_proxy import proxy_tuple
 
 logger = logging.getLogger(__name__)
 
 
-def _r() -> redis.Redis:
-    return redis.from_url(get_settings().redis_url, decode_responses=True)
+def _r():
+    return get_redis()
 
 
 def _key(account_id: uuid.UUID) -> str:
@@ -28,11 +28,9 @@ def _key(account_id: uuid.UUID) -> str:
 
 
 def normalize_login_code(raw: str) -> str:
-    """Telegram SMS kodini MTProto ga yuborish formatiga keltiradi: 52369 → 52.369 (2-raqamdan keyin nuqta)."""
+    """Telegram login kodidan faqat raqamlarni ajratib oladi. Telethon sign_in() plain digits kutadi."""
     digits = "".join(c for c in (raw or "") if c.isdigit())
-    if len(digits) < 3:
-        return (raw or "").strip()
-    return f"{digits[:2]}.{digits[2:]}"
+    return digits if digits else (raw or "").strip()
 
 
 async def send_login_code(account: Account, proxy: Proxy | None, phone: str) -> None:

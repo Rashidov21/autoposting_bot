@@ -89,9 +89,22 @@ class AddGroupBody(BaseModel):
 
 @router.post("/groups/add", dependencies=[Depends(verify_internal_secret)])
 def add_group(body: AddGroupBody, db: Session = Depends(get_db)) -> dict:
+    from sqlalchemy import select as sa_select
+
     u = user_service.get_by_telegram_id(db, body.telegram_id)
     if not u:
         raise HTTPException(status_code=404)
+    existing = db.execute(
+        sa_select(Group).where(Group.user_id == u.id, Group.telegram_chat_id == body.telegram_chat_id)
+    ).scalar_one_or_none()
+    if existing:
+        if body.title and not existing.title:
+            existing.title = body.title
+        if body.username and not existing.username:
+            existing.username = body.username
+        db.add(existing)
+        db.commit()
+        return {"id": str(existing.id)}
     g = Group(
         user_id=u.id,
         telegram_chat_id=body.telegram_chat_id,
