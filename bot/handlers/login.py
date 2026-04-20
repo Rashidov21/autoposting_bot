@@ -59,7 +59,7 @@ async def login_phone(message: Message, state: FSMContext) -> None:
     send_login_code_task.delay(data["account_id"], phone)
     await state.set_state(LoginStates.code)
     await message.answer(
-        "Telegramdan kelgan kodni yuboring (masalan 52369 yoki 52.369 — ikkalasi ham qabul qilinadi)."
+        "⚠️⚠️⚠️ Telegramdan kelgan kodni yuboring , 2-belgidan keyin . belgisini qo'yib keyin yuboring (misol uchun 52369 ni >> 52.369 — qilib yozing shunda Telegram bot qabul qiladi)."
     )
 
 
