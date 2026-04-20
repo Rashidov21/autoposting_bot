@@ -8,6 +8,9 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.db.models import Campaign, CampaignAccount, CampaignGroup, Group, Schedule, User
+from engine.campaign_signals import clear_text as _signal_clear_text
+from engine.campaign_signals import set_revoke as _signal_set_revoke
+from engine.campaign_signals import set_text as _signal_set_text
 
 
 def _utcnow() -> datetime:
@@ -82,23 +85,44 @@ def set_campaign_accounts(db: Session, campaign: Campaign, account_ids: list[uui
         db.add(CampaignAccount(campaign_id=campaign.id, account_id=aid))
 
 
-def _reschedule_running(db: Session, campaign: Campaign) -> None:
-    """Ishlayotgan kampaniya uchun keyingi yuborish vaqtini yangilaydi."""
+def _reschedule_running_cap(db: Session, campaign: Campaign) -> None:
+    """
+    Faqat ``next_run_at`` hozirgi kelajakda juda uzoq bo'lsa, uni
+    ``now + interval`` ga qisqartiradi. Mavjud yaqinroq vaqtga tegmaydi.
+
+    Sabab: foydalanuvchi tahrir qilganda keyingi yuborish vaqti **oldinga
+    itarilmasin**. Aks holda har tahrir + interval daqiqa jazo bo'ladi.
+    """
     if campaign.status != "running":
         return
-    jitter = random.uniform(0, 90)
-    nra = _utcnow() + timedelta(minutes=campaign.interval_minutes) + timedelta(seconds=jitter)
     s = db.execute(select(Schedule).where(Schedule.campaign_id == campaign.id)).scalar_one_or_none()
-    if s:
-        s.next_run_at = nra
+    if not s:
+        return
+    jitter = random.uniform(0, 90)
+    cap = _utcnow() + timedelta(minutes=campaign.interval_minutes) + timedelta(seconds=jitter)
+    # Faqat mavjud next_run_at cap dan kattaroq bo'lsa (ya'ni foydalanuvchi
+    # intervalni kamaytirgan bo'lsa yoki cap o'tmishda qolgan bo'lsa) qisqartiramiz.
+    if s.next_run_at is None or s.next_run_at > cap:
+        s.next_run_at = cap
         db.add(s)
-    db.add(campaign)
 
 
 def update_campaign_message_text(db: Session, campaign: Campaign, message_text: str) -> None:
+    """
+    Matnni DB va Redis ga yozadi. Ishlayotgan workerga revoke signali yuboradi
+    -> u joriy roundni grace tugatadi va keyingi roundda yangi matn ketadi.
+
+    DIQQAT: ``next_run_at`` ga tegilmaydi. Kaller explicit tez-yuborish
+    kerak bo'lsa, ``trigger_immediate_round`` chaqirsin (hozirda avtomatik
+    revoke + qisqa ``next_run_at`` sender ichida qo'yiladi).
+    """
     campaign.message_text = message_text
     db.add(campaign)
-    _reschedule_running(db, campaign)
+    # Redis ga yozamiz -> in-flight worker keyingi yuborishdayoq o'qiydi.
+    _signal_set_text(campaign.id, message_text)
+    # Revoke signali: in-flight round grace tugasin va yangi matn bilan
+    # qayta ishga tushsin.
+    _signal_set_revoke(campaign.id, reason="text_edit")
 
 
 def update_campaign_interval_minutes(db: Session, campaign: Campaign, interval_minutes: int) -> None:
@@ -106,7 +130,9 @@ def update_campaign_interval_minutes(db: Session, campaign: Campaign, interval_m
         raise ValueError("interval 3, 5, 10 yoki 15 bo'lishi kerak")
     campaign.interval_minutes = interval_minutes
     db.add(campaign)
-    _reschedule_running(db, campaign)
+    # Kichraytirilgan intervalda esa cap bilan yaqinlashtirish mantiqli
+    # (masalan 15 daq -> 3 daq qilinganda).
+    _reschedule_running_cap(db, campaign)
 
 
 def replace_campaign_groups(db: Session, campaign: Campaign, group_ids: list[uuid.UUID]) -> None:
@@ -117,7 +143,9 @@ def replace_campaign_groups(db: Session, campaign: Campaign, group_ids: list[uui
             continue
         db.add(CampaignGroup(campaign_id=campaign.id, group_id=gid))
     db.add(campaign)
-    _reschedule_running(db, campaign)
+    # Guruhlar o'zgarganda - in-flight round'ga revoke yuborib, yangi to'plam
+    # bilan keyingi roundni boshlash to'g'ri.
+    _signal_set_revoke(campaign.id, reason="groups_edit")
 
 
 def list_campaign_group_ids(db: Session, campaign_id: uuid.UUID) -> list[uuid.UUID]:
@@ -167,6 +195,8 @@ def start_campaign(db: Session, campaign: Campaign) -> tuple[Schedule, int]:
 def stop_campaign(db: Session, campaign: Campaign) -> None:
     campaign.status = "paused"
     db.add(campaign)
+    # In-flight round bo'lsa, grace bilan tugatsin.
+    _signal_set_revoke(campaign.id, reason="stop")
 
 
 def delete_user_group(db: Session, user: User, group_id: uuid.UUID) -> bool:
@@ -202,8 +232,46 @@ def list_user_campaigns(db: Session, user_id: uuid.UUID) -> list[Campaign]:
     return list(db.execute(select(Campaign).where(Campaign.user_id == user_id)).scalars().all())
 
 
+def revoke_in_flight_campaigns_for_user(db: Session, user: User) -> list[uuid.UUID]:
+    """
+    Foydalanuvchining barcha kampaniyalariga revoke signali yuboradi.
+    Ishlayotgan worker grace exit qilib outcomelarini yozib ulguradi.
+
+    Bu funksiya **tez** — Redis ga bir nechta kichik SET. Aiogram handlerdan
+    chaqirish bexavf.
+
+    Kaller keyin ~2 soniya (``await asyncio.sleep(2)``) kutib, so'ng
+    ``delete_all_campaigns_for_user`` chaqirishi tavsiya etiladi — shu orqali
+    ``send_logs`` FK violation oldi olinadi.
+    """
+    cids = list(
+        db.execute(select(Campaign.id).where(Campaign.user_id == user.id)).scalars().all()
+    )
+    for cid in cids:
+        _signal_set_revoke(cid, reason="delete_all")
+        _signal_clear_text(cid)
+    return cids
+
+
 def delete_all_campaigns_for_user(db: Session, user: User) -> int:
-    """Bitta foydalanuvchi uchun barcha xabar (kampaniya) yozuvlarini o'chiradi."""
+    """
+    Bitta foydalanuvchi uchun barcha xabar (kampaniya) yozuvlarini o'chiradi.
+
+    Ishonchli flow:
+      1) Kaller oldin ``revoke_in_flight_campaigns_for_user`` chaqiradi va
+         ~2 soniya kutadi (async handler: ``await asyncio.sleep(2)``).
+      2) Shundan so'ng shu funksiya DB delete ni bajaradi.
+
+    Bu funksiya o'zi ham revoke+clear text yuboradi (idempotent) — agar kaller
+    unutsa ham minimum himoya bor.
+    """
+    cids = list(
+        db.execute(select(Campaign.id).where(Campaign.user_id == user.id)).scalars().all()
+    )
+    for cid in cids:
+        _signal_set_revoke(cid, reason="delete_all")
+        _signal_clear_text(cid)
+
     r = db.execute(delete(Campaign).where(Campaign.user_id == user.id))
     db.flush()
     return int(r.rowcount or 0)

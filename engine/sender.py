@@ -15,6 +15,7 @@ from app.core.config import get_settings
 from app.core.security import encrypt_text
 from app.db.models import (
     Account,
+    AccountGroupBlocklist,
     Campaign,
     CampaignAccount,
     CampaignGroup,
@@ -24,6 +25,7 @@ from app.db.models import (
 )
 from app.db.models import Schedule
 from engine.anti_ban import maybe_skip_group, shuffle_order, vary_message_text, warm_up_multiplier
+from engine.campaign_signals import clear_revoke, get_text as signal_get_text, is_revoked
 from engine.client_factory import build_client
 from engine.redis_pool import get_redis
 from engine.telegram_helpers import EntityCache, ensure_joined_entity, resolve_entity, safe_send_message
@@ -36,15 +38,8 @@ def _utcnow() -> datetime:
 
 
 def _campaign_lock_key(campaign_id: uuid.UUID) -> str:
+    """Back-compat: ``engine.distributed_lock`` ishlatadi."""
     return f"campaign:exec:{campaign_id}"
-
-
-def _try_acquire_campaign_lock(r, campaign_id: uuid.UUID, ttl: int) -> bool:
-    return bool(r.set(_campaign_lock_key(campaign_id), "1", nx=True, ex=ttl))
-
-
-def _release_campaign_lock(r, campaign_id: uuid.UUID) -> None:
-    r.delete(_campaign_lock_key(campaign_id))
 
 
 @dataclass
@@ -71,8 +66,12 @@ class _SendOutcome:
     status: str
     error_code: str | None = None
     error_message: str | None = None
+    # Endi global invalid emas; (account, group) blocklist yozuvi uchun ishlatamiz.
+    mark_account_group_blocked: bool = False
+    # Faqat guruh Telegramda umuman yo'q bo'lganda (ChatIdInvalid, PeerIdInvalid):
     mark_group_invalid: bool = False
     account_banned: bool = False
+    account_reauth_required: bool = False
     flood_wait_seconds: int = 0
     warmup_inc: int = 0
     retry_count: int = 0
@@ -80,8 +79,7 @@ class _SendOutcome:
     # When entity resolution succeeds, carry the freshly-resolved access_hash
     # back to run_campaign_round so it can be persisted to the DB.
     group_access_hash: int | None = None
-    # Updated StringSession string after get_dialogs(); saved to DB so future
-    # rounds benefit from the populated entity cache without calling get_dialogs again.
+    # Updated StringSession string — faqat rost o'zgargan bo'lsa saqlaymiz.
     session_update: str | None = None
 
 
@@ -91,11 +89,68 @@ def _mark_account_banned(db: Session, acc: Account, msg: str) -> None:
     db.add(acc)
 
 
+def _mark_account_reauth_required(db: Session, acc: Account, msg: str) -> None:
+    """
+    ``is_user_authorized()`` False qaytarsa yoki ``AuthKeyUnregistered`` kelsa
+    akkauntni ``reauth_required`` ga o'tkazamiz. Shunda u keyingi roundlarda
+    tanlanmaydi va foydalanuvchi bot UI orqali qayta login qila oladi.
+    """
+    acc.status = "reauth_required"
+    acc.last_error = msg
+    db.add(acc)
+
+
 def _mark_group_invalid(db: Session, g: Group, msg: str) -> None:
+    """Faqat guruh **butunlay** yo'q bo'lgan holat (ChatIdInvalid va h.k.)."""
     g.is_valid = False
     g.last_error = msg
     g.last_checked_at = _utcnow()
     db.add(g)
+
+
+def _upsert_blocklist(db: Session, account_id: uuid.UUID, group_id: uuid.UUID, reason: str, msg: str) -> None:
+    """
+    (account, group) juftligini blocklistga qo'shadi. Agar allaqachon mavjud
+    bo'lsa, reason/msg ni yangilaydi (idempotent).
+    """
+    existing = db.get(AccountGroupBlocklist, (account_id, group_id))
+    if existing is None:
+        db.add(
+            AccountGroupBlocklist(
+                account_id=account_id,
+                group_id=group_id,
+                reason=reason,
+                error_message=(msg or "")[:2000],
+            )
+        )
+    else:
+        existing.reason = reason
+        existing.error_message = (msg or "")[:2000]
+        existing.updated_at = _utcnow()
+        db.add(existing)
+
+
+def _load_blocklist_pairs(db: Session, account_ids: list[uuid.UUID]) -> set[tuple[uuid.UUID, uuid.UUID]]:
+    """
+    Shu kampaniyadagi akkauntlar uchun barcha bloklangan (account, group)
+    juftliklarini bitta zapros bilan yuklaydi. Planning da O(1) lookup uchun
+    set qaytaradi.
+    """
+    if not account_ids:
+        return set()
+    rows = db.execute(
+        select(AccountGroupBlocklist.account_id, AccountGroupBlocklist.group_id).where(
+            AccountGroupBlocklist.account_id.in_(account_ids)
+        )
+    ).all()
+    now = _utcnow()
+    pairs: set[tuple[uuid.UUID, uuid.UUID]] = set()
+    for aid, gid in rows:
+        # Kelajakda blocked_until asosida temporary filtering qo'shish mumkin;
+        # hozir hammasi permanent deb hisoblanadi.
+        _ = now  # reserved for future temporary-ban logic
+        pairs.add((aid, gid))
+    return pairs
 
 
 def _plan_assignments(
@@ -104,7 +159,14 @@ def _plan_assignments(
     campaign: Campaign,
     *,
     rotation: str,
+    blocklist: set[tuple[uuid.UUID, uuid.UUID]],
 ) -> tuple[list[tuple[Group, Account]], list[SendLog]]:
+    """
+    Round-robin / random bilan guruhni akkauntga biriktiradi. Bloklangan
+    (account, group) juftliklarini o'tkazib yuboradi — boshqa akkauntga
+    urinib ko'radi. Barcha akkauntlar shu guruh uchun bloklangan bo'lsa,
+    guruh shu round uchun skip bo'ladi (keyingi round yana urinib ko'riladi).
+    """
     rr_idx = random.randint(0, len(accounts) - 1) if rotation == "random" else 0
     per_account_counts: dict[uuid.UUID, int] = {a.id: 0 for a in accounts}
     skipped_logs: list[SendLog] = []
@@ -121,6 +183,23 @@ def _plan_assignments(
                 return acc
         return random.choice(accounts)
 
+    def try_assign_non_blocked(g: Group) -> Account | None:
+        # Maksimum ``len(accounts)`` ta akkauntni sinaymiz; bloklangani
+        # yo'qligini tekshirib boramiz.
+        tried: set[uuid.UUID] = set()
+        while len(tried) < len(accounts):
+            acc = pick_account()
+            if acc.id in tried:
+                # Cycle: barcha akkauntlar bloklangan.
+                break
+            tried.add(acc.id)
+            if (acc.id, g.id) in blocklist:
+                continue
+            if per_account_counts[acc.id] >= acc.max_groups_limit:
+                continue
+            return acc
+        return None
+
     for g in groups:
         if not g.is_valid:
             continue
@@ -134,9 +213,19 @@ def _plan_assignments(
                 )
             )
             continue
-        acc = pick_account()
-        if per_account_counts[acc.id] >= acc.max_groups_limit:
-            acc = pick_account()
+        acc = try_assign_non_blocked(g)
+        if acc is None:
+            # Barcha akkauntlar ushbu guruh uchun bloklangan. Skip qilamiz,
+            # lekin guruhni global invalid deb belgilamaymiz.
+            skipped_logs.append(
+                SendLog(
+                    campaign_id=campaign.id,
+                    group_id=g.id,
+                    status="skipped",
+                    meta={"reason": "all_accounts_blocked"},
+                )
+            )
+            continue
         per_account_counts[acc.id] += 1
         assignments.append((g, acc))
 
@@ -168,6 +257,14 @@ async def _account_worker(
     joined_cache: set[int] = set()
     entity_cache = EntityCache(max_size=settings.sender_entity_cache_size)
     warmup_sent = acc.warm_up_sent
+    redis_client = get_redis()
+    # DB dagi matnni fallback sifatida ushlab turamiz; Redis ustuvor — bot
+    # tahririda yangilanadi, workerga realtime yetadi.
+    fallback_text = campaign.message_text
+    # ``session.save()`` natijasini faqat sessiya haqiqatan o'zgargan (yangi
+    # access_hash qo'shilgan) bo'lsa saqlaymiz. ``get_dialogs`` olib tashlangani
+    # uchun session payload har roundda kichkina bo'ladi.
+    _new_session_str: str | None = None
 
     try:
         client = build_client(acc, proxy)
@@ -187,10 +284,21 @@ async def _account_worker(
         return outcomes
 
     await client.connect()
-    _new_session_str: str | None = None
     try:
         if not await client.is_user_authorized():
             logger.warning("account_unauthorized account=%s", acc.id)
+            # Akkauntni reauth_required ga o'tkazamiz (status yangilanishi
+            # run_campaign_round da qilinadi). Shu orqali keyingi roundda
+            # ushbu akkaunt filterlanadi.
+            outcomes.append(
+                _SendOutcome(
+                    account_id=acc.id,
+                    group_id=None,
+                    status="meta",
+                    account_reauth_required=True,
+                    error_message="Session avtorizatsiya qilinmagan",
+                )
+            )
             while not queue.empty():
                 g = queue.get_nowait()
                 outcomes.append(
@@ -204,28 +312,31 @@ async def _account_worker(
                 )
             return outcomes
 
-        # Populate Telethon's in-memory entity cache so PeerChannel lookups succeed
-        # for all groups the account is a member of, even without stored access_hash.
-        # The updated StringSession (which includes the entity table) is saved back to
-        # DB afterwards, so subsequent rounds skip this call for already-known groups.
-        try:
-            await client.get_dialogs(limit=None)
-            _new_session_str = client.session.save()
-            logger.info(
-                "get_dialogs_ok account=%s",
-                acc.id,
-                extra={"account_id": str(acc.id)},
-            )
-        except Exception as _dlg_exc:
-            logger.warning(
-                "get_dialogs_failed account=%s: %s",
-                acc.id, _dlg_exc,
-                extra={"account_id": str(acc.id)},
-            )
+        # DIQQAT: ``get_dialogs(limit=None)`` bu yerdan olib tashlangan.
+        # Har roundda barcha dialoglarni chaqirish Telegram flood sabab bo'lar
+        # edi (2.A muammo). Entity resolution endi ``tg_access_hash`` (DB dan
+        # saqlanadi) va ``username`` orqali ishlaydi. Yangi guruhlarda
+        # ``sync_groups_titles_task`` bir marta cold-prime qiladi.
 
         while not queue.empty():
+            # --- revoke signal: bot tahrirda/delete_all da yoqib qo'yadi. ---
+            # Shu round ichidagi qolgan guruhlarga yuborish to'xtatiladi, outcome
+            # yo'qolmaydi, ``finish_schedule`` da ``next_run_at`` tez qayta
+            # ishga tushadi va yangi matn bilan round boshlanadi.
+            if is_revoked(redis_client, campaign.id):
+                logger.info(
+                    "campaign_revoked_graceful_exit",
+                    extra={"campaign_id": str(campaign.id), "account_id": str(acc.id)},
+                )
+                break
+
             g = await queue.get()
-            text = vary_message_text(campaign.message_text)
+
+            # ``message_text`` ni har iteration Redisdan o'qiymiz -> bot tahriri
+            # keyingi yuborishdayoq hisobga olinadi (1.A muammo).
+            current_text = signal_get_text(redis_client, campaign.id) or fallback_text
+            text = vary_message_text(current_text)
+
             wm = warm_up_multiplier(warmup_sent)
             pre_send_delay = random.uniform(
                 settings.sender_message_delay_min_seconds,
@@ -240,7 +351,6 @@ async def _account_worker(
                     username=g.username or None,
                     access_hash=g.tg_access_hash or None,
                 )
-                # Persist any newly-resolved access_hash back to the DB via outcome.
                 resolved_access_hash: int | None = getattr(entity, "access_hash", None)
                 await ensure_joined_entity(client, entity, joined_cache)
                 meta = await safe_send_message(
@@ -311,7 +421,7 @@ async def _account_worker(
                     )
                 )
                 break
-            except (errors.UserDeactivatedError, errors.UserDeactivatedBanError, errors.AuthKeyUnregisteredError) as e:
+            except (errors.UserDeactivatedError, errors.UserDeactivatedBanError) as e:
                 outcomes.append(
                     _SendOutcome(
                         account_id=acc.id,
@@ -323,20 +433,51 @@ async def _account_worker(
                     )
                 )
                 break
-            except (errors.ChatWriteForbiddenError, errors.ChannelPrivateError, errors.ChatAdminRequiredError) as e:
+            except errors.AuthKeyUnregisteredError as e:
+                # Akkaunt Telegram tomonidan logout qilingan (boshqa qurilmadan,
+                # sessiya cap, va h.k). "Banned" emas — qayta login yetarli.
                 outcomes.append(
                     _SendOutcome(
                         account_id=acc.id,
                         group_id=g.id,
                         status="fail",
-                        error_code="GROUP_INVALID",
+                        error_code="AUTH_KEY_UNREGISTERED",
                         error_message=str(e),
-                        mark_group_invalid=True,
+                        account_reauth_required=True,
+                    )
+                )
+                break
+            except (errors.ChatWriteForbiddenError, errors.ChannelPrivateError, errors.ChatAdminRequiredError) as e:
+                # DIQQAT: endi guruhni global invalid qilmaymiz. Faqat shu
+                # (account, group) juftligi blocklistga qo'shiladi. Boshqa
+                # akkauntlar shu guruhga yuborishda davom eta oladi.
+                code = e.__class__.__name__.replace("Error", "").upper()
+                outcomes.append(
+                    _SendOutcome(
+                        account_id=acc.id,
+                        group_id=g.id,
+                        status="fail",
+                        error_code=code,
+                        error_message=str(e),
+                        mark_account_group_blocked=True,
                     )
                 )
             except Exception as e:
                 msg = str(e).lower()
-                mark_invalid = "private" in msg or "kicked" in msg or "not part" in msg
+                # Guruh Telegramdan umuman yo'qolgan / ID noto'g'ri: haqiqatan
+                # ham global invalid deb belgilash mantiqli.
+                mark_invalid = any(
+                    k in msg
+                    for k in (
+                        "chat id is invalid",
+                        "peer id invalid",
+                        "channel invalid",
+                        "chatidinvalid",
+                        "peeridinvalid",
+                    )
+                )
+                # "Not part of the chat" / "kicked" kabi - akkaunt-guruh darajasi:
+                mark_blocked = any(k in msg for k in ("not part", "kicked", "banned in"))
                 outcomes.append(
                     _SendOutcome(
                         account_id=acc.id,
@@ -345,11 +486,27 @@ async def _account_worker(
                         error_code="UNKNOWN",
                         error_message=str(e),
                         mark_group_invalid=mark_invalid,
+                        mark_account_group_blocked=mark_blocked,
                     )
                 )
                 logger.exception("send_unknown account=%s group=%s", acc.id, g.id)
+
+        # Round muvaffaqiyatli yakunlandi — sessiyani bir marta yozib qo'yamiz.
+        # (Har send'dan keyin emas, chunki ``expire_on_commit=False`` + har
+        # send - ortiqcha yuk.) Sessiyani faqat yangi access_hash topilgan
+        # bo'lsa yangilanadi; aks holda bir xil bayt - DB ga yozmaslik.
+        try:
+            _new_session_str = client.session.save()
+        except Exception as _ses_exc:
+            logger.warning(
+                "session_save_failed account=%s: %s",
+                acc.id, _ses_exc,
+            )
     finally:
-        await client.disconnect()
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
 
     outcomes.append(
         _SendOutcome(
@@ -381,10 +538,23 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
     settings = get_settings()
     committer = _BatchCommitter(db, settings.sender_log_commit_batch)
 
-    def finish_schedule() -> None:
-        jitter = random.uniform(0, 90)
-        sched.last_run_at = _utcnow()
-        sched.next_run_at = _utcnow() + timedelta(minutes=campaign.interval_minutes) + timedelta(seconds=jitter)
+    # Revoke holatini round tugashi bilan tozalaymiz — keyingi round uchun
+    # signal yangidan kerak bo'lsa bot o'zi qayta qo'yadi.
+    revoke_was_set_on_entry = is_revoked(get_redis(), campaign_id)
+
+    def finish_schedule(*, revoked: bool = False) -> None:
+        """
+        Odatda: ``next_run_at = now + interval + jitter``.
+        Revoke bilan uzilgan bo'lsa: ``next_run_at = now + kichik kechikish``
+        -> yangi matn darhol ketish uchun navbatdagi roundga yo'l ochiladi.
+        """
+        if revoked:
+            sched.last_run_at = _utcnow()
+            sched.next_run_at = _utcnow() + timedelta(seconds=random.uniform(5, 20))
+        else:
+            jitter = random.uniform(0, 90)
+            sched.last_run_at = _utcnow()
+            sched.next_run_at = _utcnow() + timedelta(minutes=campaign.interval_minutes) + timedelta(seconds=jitter)
         db.add(sched)
         committer.finalize()
 
@@ -411,9 +581,14 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
         finish_schedule()
         return
 
+    # Per-(account, group) blocklist ni bir marta yuklaymiz.
+    blocklist = _load_blocklist_pairs(db, [a.id for a in accounts])
+
     rotation = campaign.rotation or "round_robin"
     groups_shuffled = shuffle_order([g for g in groups if g.is_valid])
-    assignments, skip_logs = _plan_assignments(groups_shuffled, accounts, campaign, rotation=rotation)
+    assignments, skip_logs = _plan_assignments(
+        groups_shuffled, accounts, campaign, rotation=rotation, blocklist=blocklist,
+    )
     for sl in skip_logs:
         db.add(sl)
         committer.step()
@@ -427,7 +602,11 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
     proxy_ids = {a.proxy_id for a in used_accounts if a.proxy_id}
     proxies: dict[uuid.UUID, Proxy | None] = {}
     for pid in proxy_ids:
-        proxies[pid] = db.get(Proxy, pid)
+        p = db.get(Proxy, pid)
+        # Nosog'lom proxyni ishlatmaymiz — akkauntni proxysiz (direct) urinamiz
+        # yoki proxy majburiyligi siyosatiga qarab bog'lamaymiz. Bu yerda
+        # proxy-majburligi yo'q: None qaytadi, build_client direct ulanadi.
+        proxies[pid] = p if (p and p.is_healthy) else None
 
     worker_tasks: list[asyncio.Task[list[_SendOutcome]]] = []
     for acc_id in shuffle_order(list(group_queues.keys())):
@@ -447,6 +626,9 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
         )
     worker_results = await asyncio.gather(*worker_tasks, return_exceptions=True)
 
+    # Round davomida revoke signali qo'yilgan bo'lsa ham, outcomelar yo'qolmasin.
+    revoked_mid_round = is_revoked(get_redis(), campaign_id)
+
     group_map: dict[uuid.UUID, Group] = {g.id: g for g in groups}
     for idx, result in enumerate(worker_results):
         if isinstance(result, Exception):
@@ -456,13 +638,17 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
             if out.status == "meta":
                 acc = account_map.get(out.account_id)
                 if acc:
+                    changed = False
                     if out.warmup_inc > 0:
                         acc.warm_up_sent += out.warmup_inc
+                        changed = True
                     if out.session_update:
-                        # Persist the refreshed StringSession so next round's
-                        # entity cache is pre-populated (avoids get_dialogs overhead).
                         acc.session_enc = encrypt_text(out.session_update)
-                    if out.warmup_inc > 0 or out.session_update:
+                        changed = True
+                    if out.account_reauth_required and acc.status == "active":
+                        _mark_account_reauth_required(db, acc, out.error_message or "reauth")
+                        changed = True
+                    if changed:
                         db.add(acc)
                 continue
             if not out.group_id:
@@ -471,6 +657,10 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
                 acc = account_map.get(out.account_id)
                 if acc:
                     _mark_account_banned(db, acc, out.error_message or "ACCOUNT_BANNED")
+            if out.account_reauth_required:
+                acc = account_map.get(out.account_id)
+                if acc and acc.status == "active":
+                    _mark_account_reauth_required(db, acc, out.error_message or "reauth")
             if out.flood_wait_seconds > 0:
                 acc = account_map.get(out.account_id)
                 if acc:
@@ -480,7 +670,14 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
                 g = group_map.get(out.group_id)
                 if g:
                     _mark_group_invalid(db, g, out.error_message or "GROUP_INVALID")
-            # Persist freshly-resolved access_hash so future rounds skip entity lookup.
+            if out.mark_account_group_blocked:
+                _upsert_blocklist(
+                    db,
+                    out.account_id,
+                    out.group_id,
+                    reason=out.error_code or "BLOCKED",
+                    msg=out.error_message or "",
+                )
             if out.group_access_hash is not None:
                 g = group_map.get(out.group_id)
                 if g and g.tg_access_hash != out.group_access_hash:
@@ -503,16 +700,35 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
             )
             committer.step()
 
-    finish_schedule()
+    finish_schedule(revoked=revoked_mid_round or revoke_was_set_on_entry)
+
+    # Round muvaffaqiyatli tugadi (yoki revoke bilan) — Redis'dagi signalni
+    # tozalab qo'yamiz. Foydalanuvchi tahrir qilmasa keyingi round oddiy
+    # rejimda ishlaydi.
+    if revoked_mid_round or revoke_was_set_on_entry:
+        clear_revoke(campaign_id)
 
 
 def run_campaign_round_sync(db: Session, campaign_id: uuid.UUID) -> None:
+    """
+    Celery task entrypoint. Fencing-token + heartbeat bilan Redis lock olinadi.
+    Crash bo'lsa lock ~60 soniya ichida avtomatik bo'shaydi; uzoq ishlaydigan
+    roundlarda esa heartbeat TTL ni uzaytirib boradi.
+    """
+    from engine.distributed_lock import acquire, release
+
     settings = get_settings()
     r = get_redis()
-    if not _try_acquire_campaign_lock(r, campaign_id, settings.campaign_lock_ttl_seconds):
+    held = acquire(
+        r,
+        _campaign_lock_key(campaign_id),
+        ttl_ms=60_000,
+        heartbeat_interval_s=20.0,
+    )
+    if held is None:
         logger.info("Kampaniya bajarilmoqda, takroriy ishga tushirish o'tkazildi: %s", campaign_id)
         return
     try:
         asyncio.run(run_campaign_round(db, campaign_id))
     finally:
-        _release_campaign_lock(r, campaign_id)
+        release(r, held)

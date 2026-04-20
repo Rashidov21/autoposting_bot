@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import uuid
 
@@ -312,6 +313,7 @@ async def xab_new_start(callback: CallbackQuery, state: FSMContext) -> None:
     if not cid:
         await callback.answer("Xato")
         return
+    # Faza 1: revoke signali yuboramiz (tez, DB delete qilmaymiz).
     db = SessionLocal()
     try:
         u = user_service.get_by_telegram_id(db, callback.from_user.id)
@@ -322,7 +324,7 @@ async def xab_new_start(callback: CallbackQuery, state: FSMContext) -> None:
         if not c or c.user_id != u.id:
             await callback.answer("Topilmadi", show_alert=True)
             return
-        campaign_service.delete_all_campaigns_for_user(db, u)
+        campaign_service.revoke_in_flight_campaigns_for_user(db, u)
         db.commit()
     except Exception as e:
         db.rollback()
@@ -330,6 +332,27 @@ async def xab_new_start(callback: CallbackQuery, state: FSMContext) -> None:
         return
     finally:
         db.close()
+
+    # Faza 2: ishlayotgan worker grace exit qilguncha kutamiz. Aiogram async
+    # handler bloklanmaydi — boshqa foydalanuvchilar xabarlari parallel ishlaydi.
+    await asyncio.sleep(2.0)
+
+    # Faza 3: endi xavfsiz DELETE — send_logs FK violation xavfi yo'q.
+    db = SessionLocal()
+    try:
+        u2 = user_service.get_by_telegram_id(db, callback.from_user.id)
+        if not u2:
+            await callback.answer("/start")
+            return
+        campaign_service.delete_all_campaigns_for_user(db, u2)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        await callback.answer(str(e)[:120], show_alert=True)
+        return
+    finally:
+        db.close()
+
     await state.clear()
     await state.set_state(CampaignStates.message_text)
     await callback.message.answer(

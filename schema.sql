@@ -100,6 +100,19 @@ CREATE TABLE campaign_accounts (
     PRIMARY KEY (campaign_id, account_id)
 );
 
+CREATE TABLE account_group_blocklist (
+    account_id   UUID        NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    group_id     UUID        NOT NULL REFERENCES groups(id)   ON DELETE CASCADE,
+    reason       VARCHAR(64) NOT NULL,
+    error_message TEXT,
+    blocked_until TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (account_id, group_id)
+);
+CREATE INDEX idx_account_group_blocklist_account ON account_group_blocklist (account_id);
+CREATE INDEX idx_account_group_blocklist_group   ON account_group_blocklist (group_id);
+
 CREATE TABLE schedules (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     campaign_id UUID NOT NULL UNIQUE REFERENCES campaigns(id) ON DELETE CASCADE,

@@ -162,6 +162,33 @@ class CampaignAccount(Base):
     account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True)
 
 
+class AccountGroupBlocklist(Base):
+    """
+    Per-(account, group) blok ro'yxati.
+
+    ``groups.is_valid`` ni global ravishda ``False`` qilib qo'yish noto'g'ri edi:
+    ``ChatWriteForbidden``/``ChannelPrivate`` xatolari aslida akkaunt-guruh
+    juftligiga tegishli. Migration 0002 bu jadvalni qo'shadi.
+    ``blocked_until`` NULL bo'lsa - permanent blok; kelajak vaqt - muvaqqat.
+    """
+
+    __tablename__ = "account_group_blocklist"
+
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True
+    )
+    reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    error_message: Mapped[Optional[str]] = mapped_column(Text)
+    blocked_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class SendLog(Base):
     __tablename__ = "send_logs"
 

@@ -28,7 +28,10 @@ def build_client(account: Account, proxy: Proxy | None) -> TelegramClient:
         timeout=settings.telethon_timeout,
         flood_sleep_threshold=24,
         request_retries=3,
-        auto_reconnect=False,
+        # auto_reconnect=True: NAT/proxy timeout yoki tarmoq tebranishida
+        # Telethon ichki reconnect mexanizmi ishlasin. Aks holda uzun roundda
+        # bitta uzilish butun workerni o'ldiradi va keyingi guruhlar qoladi.
+        auto_reconnect=True,
         **device_params(account.id),
     )
 
