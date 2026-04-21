@@ -9,7 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# VPS da ba'zan PyPI/SSL yoki eski pip sabab ``from versions: none`` xatosi chiqadi.
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir --retries 10 --timeout 120 \
+        --trusted-host pypi.org --trusted-host files.pythonhosted.org \
+        -r requirements.txt
 
 COPY app app
 COPY bot bot
