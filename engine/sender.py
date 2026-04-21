@@ -707,7 +707,7 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
 def run_campaign_round_sync(db: Session, campaign_id: uuid.UUID) -> None:
     """
     Celery task entrypoint. Fencing-token + heartbeat bilan Redis lock olinadi.
-    Crash bo'lsa lock ~60 soniya ichida avtomatik bo'shaydi; uzoq ishlaydigan
+    Crash bo'lsa lock TTL (``campaign_lock_ttl_seconds``) bo'yicha bo'shaydi; uzoq ishlaydigan
     roundlarda esa heartbeat TTL ni uzaytirib boradi.
     """
     from engine.distributed_lock import acquire, release
@@ -717,7 +717,7 @@ def run_campaign_round_sync(db: Session, campaign_id: uuid.UUID) -> None:
     held = acquire(
         r,
         _campaign_lock_key(campaign_id),
-        ttl_ms=60_000,
+        ttl_ms=settings.campaign_lock_ttl_ms,
         heartbeat_interval_s=20.0,
     )
     if held is None:

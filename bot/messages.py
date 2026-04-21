@@ -45,6 +45,8 @@ MSG_WELCOME = (
     "👋 Assalomu alaykum!\n\n"
     "Bu yerda avtomatik xabarlarni guruhlarga yuborishni boshqarasiz "
     "(Telethon userbot orqali).\n\n"
+    "👤 Bir foydalanuvchi — bir vaqtda bitta faol Telethon akkaunti. "
+    "Yangisini ulasangiz, avvalgisi avtomatik o'chiriladi.\n\n"
     "▶️ Boshlash: pastdagi tugmalardan birini tanlang.\n"
     "❓ Chalg‘maslik uchun: «❓ Yordam»."
 )
@@ -55,9 +57,9 @@ MSG_HELP = (
     "📢 Xabar — matn, guruhlar va interval (yangi yoki mavjudni tahrirlash).\n"
     "📊 Holat — keyingi yuborish vaqti va statistika.\n"
     "⏹ To'xtatish — barcha yuborishlarni vaqtincha to'xtatish.\n"
-    "▶️ Ishga tushirish — barcha yuborishlar to'xtatilgan bo'lsa, oxirgi tanlangan xabarni qayta ishga tushirish.\n"
+    "▶️ Ishga tushirish — barcha yuborishlar to'xtatilgan bo'lsa, eng oxirgi tahrirlangan to'xtatilgan xabarni ishga tushirish.\n"
     "🎬 Qo'llanma — video (faqat shaxsiy chatda; admin sozlasagina).\n"
-    "👤 Akkaunt ulash — Telethon akkauntni ulash.\n\n"
+    "👤 Akkaunt ulash — Telethon akkauntni ulash (yangi ulangan faol bo'ladi; avvalgisi avtomatik almashtiriladi).\n\n"
     "🔁 Pastdagi tugmalar — boshqa bo'limga o'tish.\n"
     "«Bekor qilish» — joriy bosqichni tugatadi."
 )
@@ -82,7 +84,7 @@ MSG_GROUPS_NONE_SELECTED = "⚠️ Kamida bitta guruhni tanlang."
 MSG_INTERVAL_PROMPT = "⏱ Intervalni tanlang (pastdagi tugmalar):"
 MSG_CAMPAIGN_STARTED = "✅ Xabar ishga tushdi."
 MSG_CAMPAIGN_OLD_PAUSED = (
-    "ℹ️ Boshqa faol xabarlar pauzaga olindi (bir vaqtning o'zida bitta faol xabar)."
+    "ℹ️ Shu akkauntdagi boshqa faol xabarlar pauzaga olindi (bir akkauntda bir vaqtda bitta faol xabar)."
 )
 
 MSG_XABAR_PANEL_CAPTION = "📋 Mavjud xabar — tahrirlash yoki yangisini boshlash:"

@@ -8,12 +8,10 @@ import uuid
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardRemove
-from sqlalchemy import select
-
 from app.core.config import get_settings
-from app.db.models import Account
 from app.db.session import SessionLocal
 from app.services.payment_text import build_payment_instruction_html
+from app.services import accounts as accounts_service
 from app.services import subscription as subscription_service
 from app.services import users as user_service
 from bot.keyboards import reply_main_menu, phone_share_kb, tariff_inline_kb
@@ -182,10 +180,9 @@ async def payment_screenshot(message: Message, state: FSMContext) -> None:
             await message.answer("/start", reply_markup=reply_main_menu(message.from_user.id))
             await state.clear()
             return
-        has_active_account = db.execute(
-            select(Account.id).where(Account.user_id == u.id, Account.status == "active")
-        ).scalar_one_or_none()
-        if not has_active_account:
+        active_acc = accounts_service.get_active_account_for_user(db, u.id)
+        db.commit()
+        if not active_acc:
             await state.clear()
             await message.answer(
                 "To'lovni yuborishdan oldin akkauntingiz active bo'lishi kerak.\n"

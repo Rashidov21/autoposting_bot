@@ -87,6 +87,11 @@ sequenceDiagram
 | `FERNET_KEY` | Ha (session shifrlash) | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `INTERNAL_API_SECRET` | Ha (API himoyasi) | Uzoq tasodifiy qator |
 | `DEFAULT_GROUP_CHAT_IDS` | Yo'q (ixtiyoriy) | Yangi userga avtomatik qo'shiladigan chat ID lar (vergul bilan) |
+| `FSM_REDIS_URL` | Yo'q | Berilsa bot FSM Redis da (prod / bir nechta replika). Bo'sh = RAM (`MemoryStorage`) |
+
+**To'xtatish (STOP):** bitta Telegram foydalanuvchining **barcha** Telethon akkauntlari bo'yicha `running` kampaniyalar pauzaga olinadi. Bitta akkaunt uchun tanlab to'xtatish — `📊 Holat` orqali har bir kampaniya uchun pauza.
+
+Ma'lumotlar bazasi strategiyasi: [docs/MIGRATION.md](docs/MIGRATION.md).
 
 ---
 
@@ -115,14 +120,15 @@ python -m scripts.init_db
 
 Alternativa: `psql ... -f schema.sql`
 
-### 4.3 To‘rt jarayon (alohida terminal)
+### 4.3 Beshta jarayon (alohida terminal)
 
 | # | Buyruq | Tavsif |
 |---|--------|--------|
 | 1 | `uvicorn app.main:app --reload --host 0.0.0.0 --port 8000` | API + health |
-| 2 | `celery -A worker.celery_app:celery_app worker -l info` | Telethon vazifalari |
-| 3 | `celery -A worker.celery_app:celery_app beat -l info` | **Scheduler** |
-| 4 | `python -m bot.main` | Boshqaruv boti |
+| 2 | `make run-worker` yoki `celery ... -Q campaign ...` | **Kampaniya** navbati (Telethon yuborish) |
+| 3 | `make run-worker-aux` yoki `celery ... -Q default,scheduler ...` | Login, scheduler vazifalari |
+| 4 | `make run-beat` | **Celery Beat** (jadval) |
+| 5 | `make run-bot` | Boshqaruv boti |
 
 **Tekshiruv:** `GET http://localhost:8000/health` va `GET http://localhost:8000/api/v1/health/ready` (DB + Redis).
 
@@ -133,9 +139,12 @@ make install
 make init-db
 make run-api    # alohida terminalda
 make run-worker
+make run-worker-aux
 make run-beat
 make run-bot
 ```
+
+**Testlar:** `pytest -q` (loyiha ildizidan).
 
 ---
 
@@ -155,9 +164,9 @@ docker compose up -d
 docker compose run --rm api python -m scripts.init_db
 ```
 
-Servislar: `db`, `redis`, `api` (8000), `worker`, `beat` (scheduler), `bot`.
+Servislar: `db`, `redis`, `api` (8000), `worker_campaign`, `worker_aux`, `beat` (scheduler), `bot`.
 
-Loglar: `docker compose logs -f worker beat bot`
+Loglar: `docker compose logs -f worker_campaign worker_aux beat bot api`
 
 ---
 
@@ -171,6 +180,8 @@ Loglar: `docker compose logs -f worker beat bot`
 | `engine/` | Telethon: client, login, yuborish, anti-ban |
 | `scripts/` | `init_db` |
 | `schema.sql` | SQL DDL (ixtiyoriy import) |
+| `docs/MIGRATION.md` | DB: `init_db` vs SQL migratsiya strategiyasi |
+| `tests/` | `pytest` |
 
 ---
 
@@ -185,7 +196,7 @@ Loglar: `docker compose logs -f worker beat bot`
 | Simptom | Tekshirish |
 |---------|------------|
 | Bot javob bermaydi | `BOT_TOKEN`, `db` ishlayaptimi, `bot` konteyner loglari |
-| Kampaniya yuborilmaydi | `worker` + `beat` ishlayaptimi, `campaigns.status=running`, `schedules.next_run_at` |
+| Kampaniya yuborilmaydi | `worker_campaign` + `beat` + `worker_aux` ishlayaptimi, `campaigns.status=running`, `schedules.next_run_at` |
 | Login ishlamaydi | `TELEGRAM_API_ID/HASH`, `FERNET_KEY`, Redis, worker loglari |
 | Import xatosi | `sqlalchemy>=2.0`, loyiha ildizidan ishga tushirish |
 
@@ -194,6 +205,6 @@ Loglar: `docker compose logs -f worker beat bot`
 ## 9. Qisqa xulosa
 
 - **Scheduler** = **Celery Beat** (`beat` servisi) — Redis orqali worker ga yuborish vaqtlarini boshqaradi.
-- **Worker** = **Celery worker** — Telethon va DB bilan haqiqiy ishni bajaradi.
+- **Worker** = **Celery** — `worker_campaign` (Telethon yuborish), `worker_aux` (login, yordamchi vazifalar).
 - **Database** = barcha modullar uchun yagona manba — bot va worker bir xil `DATABASE_URL` dan foydalanadi.
 - **Telegram bot** = foydalanuvchi interfeysi; yuborish **worker + engine** da.

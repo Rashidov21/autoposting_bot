@@ -42,16 +42,6 @@ def ensure_groups_for_account(
     return out
 
 
-def ensure_groups_for_user(db: Session, user: User, telegram_chat_ids: list[int]) -> list[uuid.UUID]:
-    """Eski API: foydalanuvchining bitta faol akkaunti uchun ``ensure_groups_for_account``."""
-    acc = db.execute(
-        select(Account).where(Account.user_id == user.id, Account.status == "active").order_by(Account.created_at)
-    ).scalars().first()
-    if not acc:
-        raise ValueError("Faol Telethon akkaunti yo'q — avval akkaunt ulang")
-    return ensure_groups_for_account(db, user, acc, telegram_chat_ids)
-
-
 def create_campaign(
     db: Session,
     user: User,
@@ -229,6 +219,42 @@ def stop_campaign(db: Session, campaign: Campaign) -> None:
     db.add(campaign)
     # In-flight round bo'lsa, grace bilan tugatsin.
     _signal_set_revoke(campaign.id, reason="stop")
+
+
+def stop_all_running_campaigns_for_user(db: Session, user: User) -> int:
+    """
+    Shu bot foydalanuvchisining **barcha** Telethon akkauntlari bo'yicha
+    ``running`` kampaniyalarni pauzaga (masalan «To'xtatish» tugmasi).
+    """
+    camps = list(
+        db.execute(select(Campaign).where(Campaign.user_id == user.id, Campaign.status == "running"))
+        .scalars()
+        .all()
+    )
+    for c in camps:
+        stop_campaign(db, c)
+    return len(camps)
+
+
+def stop_all_running_campaigns_for_account(db: Session, user: User, account_id: uuid.UUID) -> int:
+    """Berilgan ``account_id`` ostidagi ``running`` kampaniyalarni pauzaga (API/kelajak UI)."""
+    acc = db.get(Account, account_id)
+    if not acc or acc.user_id != user.id:
+        return 0
+    camps = list(
+        db.execute(
+            select(Campaign).where(
+                Campaign.user_id == user.id,
+                Campaign.account_id == account_id,
+                Campaign.status == "running",
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for c in camps:
+        stop_campaign(db, c)
+    return len(camps)
 
 
 def delete_user_group(db: Session, user: User, group_id: uuid.UUID, *, account_id: uuid.UUID | None = None) -> bool:

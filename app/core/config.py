@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     db_pool_timeout: int = Field(default=30, ge=5)
 
     redis_url: str = "redis://localhost:6379/0"
+    # Bo'sh bo'lsa bot FSM MemoryStorage; berilsa RedisStorage (prod / bir nechta replika)
+    fsm_redis_url: str = ""
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
     celery_task_ignore_result: bool = True
@@ -97,6 +99,11 @@ class Settings(BaseSettings):
     @property
     def default_group_chat_id_list(self) -> list[int]:
         return parse_int_csv(self.default_group_chat_ids)
+
+    @property
+    def campaign_lock_ttl_ms(self) -> int:
+        """Redis distributed lock TTL (ms) — ``run_campaign_round_sync`` uchun."""
+        return int(self.campaign_lock_ttl_seconds * 1000)
 
     @property
     def telethon_api(self) -> tuple[int, str]:

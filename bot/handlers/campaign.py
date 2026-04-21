@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from app.db.models import Account, Campaign, Group, User
 from app.db.session import SessionLocal
+from app.services import accounts as accounts_service
 from app.services import campaigns as campaign_service
 from app.services.campaigns import ALLOWED_INTERVAL_MINUTES
 from app.services.group_titles_bot import refresh_group_titles_from_bot
@@ -55,18 +56,6 @@ from bot.messages import (
 from bot.states import CampaignStates
 
 router = Router(name="campaign")
-
-
-def _active_accounts(db, user_id: uuid.UUID) -> list[Account]:
-    return list(
-        db.execute(
-            select(Account)
-            .where(Account.user_id == user_id, Account.status == "active")
-            .order_by(Account.created_at)
-        )
-        .scalars()
-        .all()
-    )
 
 
 def _state_account_uuid(data: dict) -> uuid.UUID | None:
@@ -263,59 +252,47 @@ async def _fsm_main_menu_switch(message: Message, state: FSMContext) -> bool:
 @router.message(F.text == BTN_CAMPAIGN)
 async def xabar_entry(message: Message, state: FSMContext) -> None:
     await state.clear()
+    acc: Account | None = None
+    u: User | None = None
     db = SessionLocal()
     try:
         u = user_service.get_by_telegram_id(db, message.from_user.id)
         if not u:
             await message.answer("/start")
             return
-        accounts = _active_accounts(db, u.id)
+        acc = accounts_service.get_active_account_for_user(db, u.id)
+        db.commit()
     finally:
         db.close()
 
-    if not accounts:
+    if not acc or not u:
         await message.answer(
             "📭 Faol Telethon akkaunti yo'q. Avval «👤 Akkaunt ulash» orqali akkaunt ulang.",
             reply_markup=reply_main_menu(message.from_user.id),
         )
         return
 
-    if len(accounts) > 1:
-        rows: list[list[InlineKeyboardButton]] = []
-        for a in accounts:
-            label = _account_short_label(a)
-            rows.append([InlineKeyboardButton(text=f"👤 {label}", callback_data=f"campacc:{a.id}")])
-        await message.answer(
-            "Qaysi Telethon akkaunti uchun xabarlarni boshqarasiz?",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
-        )
-        return
-
-    await _present_xabar_menu(message, state, u, accounts[0].id)
+    await _present_xabar_menu(message, state, u, acc.id)
 
 
 @router.callback_query(F.data.startswith("campacc:"))
 async def xabar_pick_account(callback: CallbackQuery, state: FSMContext) -> None:
-    raw = (callback.data or "").replace("campacc:", "", 1).strip()
-    try:
-        aid = uuid.UUID(raw)
-    except ValueError:
-        await callback.answer("Xato", show_alert=True)
-        return
+    """Eski inline klaviaturalar uchun: har doim joriy yagona ``active`` akkauntga yo'naltiradi."""
     db = SessionLocal()
     try:
         u = user_service.get_by_telegram_id(db, callback.from_user.id)
         if not u:
             await callback.answer("/start")
             return
-        acc = db.get(Account, aid)
-        if not acc or acc.user_id != u.id or acc.status != "active":
-            await callback.answer("Akkaunt topilmadi", show_alert=True)
-            return
+        acc = accounts_service.get_active_account_for_user(db, u.id)
+        db.commit()
     finally:
         db.close()
+    if not acc:
+        await callback.answer("Faol akkaunt yo'q", show_alert=True)
+        return
     await state.clear()
-    await _present_xabar_menu(callback.message, state, u, aid)
+    await _present_xabar_menu(callback.message, state, u, acc.id)
     await callback.answer()
 
 

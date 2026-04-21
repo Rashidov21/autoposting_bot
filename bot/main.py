@@ -5,6 +5,7 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.redis import RedisStorage
 
 from app.core.config import get_settings
 from bot.admin_handlers import router as admin_router
@@ -19,7 +20,9 @@ async def main() -> None:
     if not settings.bot_token:
         raise RuntimeError("BOT_TOKEN sozlanmagan")
     bot = Bot(settings.bot_token)
-    dp = Dispatcher(storage=MemoryStorage())
+    fsm_url = (settings.fsm_redis_url or "").strip()
+    storage = RedisStorage.from_url(fsm_url) if fsm_url else MemoryStorage()
+    dp = Dispatcher(storage=storage)
     dp.message.middleware(AccessMiddleware())
     dp.callback_query.middleware(AccessMiddleware())
     dp.include_router(admin_router)

@@ -16,6 +16,7 @@ from app.core.admin import is_admin
 from app.core.config import get_settings
 from app.db.models import Account, Campaign, Group, Schedule, SendLog
 from app.db.session import SessionLocal
+from app.services import accounts as accounts_service
 from app.services import campaigns as campaign_service
 from app.services import users as user_service
 from app.services.subscription import is_subscription_active
@@ -225,9 +226,10 @@ async def help_account_status(callback: CallbackQuery) -> None:
             .all()
         )
         total_accounts = len(accounts)
-        active_accounts = sum(1 for a in accounts if a.status == "active")
-        account_state = "✅ Aktiv" if active_accounts > 0 else "❌ Aktiv emas"
-        latest_login_like = accounts[0].updated_at if accounts else None
+        active_one = accounts_service.get_active_account_for_user(db, u.id)
+        db.commit()
+        account_state = "✅ Faol" if active_one else "❌ Faol akkaunt yo'q"
+        latest_login_like = active_one.updated_at if active_one else (accounts[0].updated_at if accounts else None)
         login_text = "yo'q"
         if latest_login_like:
             dt = latest_login_like
@@ -263,12 +265,14 @@ async def help_account_status(callback: CallbackQuery) -> None:
                 se = se.replace(tzinfo=timezone.utc)
             sub_text = se.astimezone(_UZ_TZ).strftime("%d.%m.%Y %H:%M")
 
+        active_phone = ""
+        if active_one and (active_one.phone or "").strip():
+            active_phone = f" ({active_one.phone.strip()})"
         body = (
             "📌 Akkaunt ma'lumotlari\n\n"
-            f"👤 Akkaunt holati: {account_state}\n"
-            f"🔢 Ulangan akkauntlar: {total_accounts} ta\n"
-            f"🟢 Aktiv akkauntlar: {active_accounts} ta\n"
-            f"🕒 Oxirgi login vaqti: {login_text} (Oʻzbekiston)\n"
+            f"👤 Joriy faol akkaunt{active_phone}: {account_state}\n"
+            f"🔢 Jami akkaunt yozuvlari (tarix): {total_accounts} ta\n"
+            f"🕒 Oxirgi faol akkaunt yangilanishi: {login_text} (Oʻzbekiston)\n"
             f"👥 Guruhlar soni: {groups_n}\n"
             f"📢 Xabarlar: {campaigns_n} ta (running: {running_n})\n"
             f"📊 Statistika: {sent_ok} ok / {sent_total} jami (xato: {sent_fail}, o'tkazilgan: {sent_skipped})\n"
@@ -287,20 +291,15 @@ async def status_cmd(message: Message) -> None:
 
 
 async def execute_stop_answer(message: Message) -> None:
-    """To'xtatish logikasi — boshqa handlerlardan chaqirish mumkin."""
+    """Foydalanuvchining barcha ishlayotgan kampaniyalarini pauzaga (bitta faol akkaunt siyosatida — odatda bitta oqim)."""
     db = SessionLocal()
     try:
         u = user_service.get_by_telegram_id(db, message.from_user.id)
         if not u:
             await message.answer("/start")
             return
-        camps = db.execute(
-            select(Campaign).where(Campaign.user_id == u.id, Campaign.status == "running")
-        ).scalars().all()
-        for c in camps:
-            campaign_service.stop_campaign(db, c)
+        n = campaign_service.stop_all_running_campaigns_for_user(db, u)
         db.commit()
-        n = len(camps)
         body = MSG_STOP_DONE.format(n=n)
         if n > 0:
             body += "\n\n" + MSG_STOP_NEXT_HINT
@@ -317,7 +316,7 @@ async def stop_cmd(message: Message) -> None:
 
 
 async def execute_resume_answer(message: Message) -> None:
-    """To'xtatilgan xabarlardan birini (eng oxirgi yangilangan) ishga tushirish."""
+    """To'xtatilgan xabarlardan eng oxirgi tahrirlanganini ishga tushirish (yordam matni bilan mos)."""
     db = SessionLocal()
     try:
         u = user_service.get_by_telegram_id(db, message.from_user.id)

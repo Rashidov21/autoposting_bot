@@ -25,3 +25,6 @@ PySocks>=1.7.1
 # Utils
 python-dotenv>=1.0.0
 cryptography>=42.0.0
+
+# Dev / CI
+pytest>=8.0.0

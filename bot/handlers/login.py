@@ -86,6 +86,7 @@ async def login_code(message: Message, state: FSMContext) -> None:
 
     complete_login_task.delay(acc_id, phone, code)
     await message.answer(
-        "Kod qabul qilindi. Bir necha soniyadan keyin akkaunt faollashadi.",
+        "Kod qabul qilindi. Bir necha soniyadan keyin bu akkaunt faol bo'ladi; "
+        "oldingi faol akkaunt (bo'lsa) avtomatik o'chiriladi.",
         reply_markup=reply_main_menu(message.from_user.id),
     )
