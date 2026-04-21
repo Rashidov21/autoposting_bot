@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.db.models import Group, User
+from app.db.models import Account, Group, User
 
 logger = logging.getLogger(__name__)
 
@@ -35,28 +35,31 @@ def upsert_user(db: Session, telegram_id: int, username: str | None, full_name: 
     )
     db.add(u)
     db.flush()
-    created_group_ids = _ensure_default_groups(db, u)
-    _queue_group_title_sync(created_group_ids)
     return u
 
 
-def _ensure_default_groups(db: Session, user: User) -> list[uuid.UUID]:
-    """Yangi user uchun default guruhlarni biriktiradi."""
+def ensure_default_groups_for_account(db: Session, account: Account) -> list[uuid.UUID]:
+    """Telethon akkaunt muvaffaqiyatli ulangach — default chat ID lar uchun ``groups`` yozuvlari."""
     created_ids: list[uuid.UUID] = []
+    u = db.get(User, account.user_id)
+    if not u:
+        return created_ids
     default_ids = get_settings().default_group_chat_id_list
     if not default_ids:
         return created_ids
     for chat_id in default_ids:
         g = db.execute(
             select(Group).where(
-                Group.user_id == user.id,
+                Group.user_id == u.id,
+                Group.account_id == account.id,
                 Group.telegram_chat_id == int(chat_id),
             )
         ).scalar_one_or_none()
         if g:
             continue
         ng = Group(
-            user_id=user.id,
+            user_id=u.id,
+            account_id=account.id,
             telegram_chat_id=int(chat_id),
             is_valid=True,
         )
@@ -66,7 +69,7 @@ def _ensure_default_groups(db: Session, user: User) -> list[uuid.UUID]:
     return created_ids
 
 
-def _queue_group_title_sync(group_ids: list[uuid.UUID]) -> None:
+def queue_group_title_sync(group_ids: list[uuid.UUID]) -> None:
     """Guruh nomlarini olish vazifasini queue ga qo'shadi."""
     if not group_ids:
         return

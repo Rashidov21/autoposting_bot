@@ -187,6 +187,10 @@ def complete_login_task(account_id: str, phone: str, code: str) -> None:
         try:
             asyncio.run(complete_login(acc, proxy, phone, code.strip()))
             db.add(acc)
+            from app.services import users as user_service
+
+            created_gids = user_service.ensure_default_groups_for_account(db, acc)
+            user_service.queue_group_title_sync(created_gids)
             db.commit()
         except Exception as exc:
             err_msg = str(exc)[:512]

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Campaign, CampaignAccount, CampaignGroup, Group, Schedule, User
+from app.db.models import Account, Campaign, CampaignAccount, CampaignGroup, Group, Schedule, User
 from engine.campaign_signals import clear_text as _signal_clear_text
 from engine.campaign_signals import set_revoke as _signal_set_revoke
 from engine.campaign_signals import set_text as _signal_set_text
@@ -19,24 +19,43 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def ensure_groups_for_user(db: Session, user: User, telegram_chat_ids: list[int]) -> list[uuid.UUID]:
-    """Foydalanuvchi uchun guruh yozuvlarini yaratadi yoki topadi."""
+def ensure_groups_for_account(
+    db: Session, user: User, account: Account, telegram_chat_ids: list[int]
+) -> list[uuid.UUID]:
+    """Berilgan Telethon akkaunt kontekstida guruh yozuvlarini yaratadi yoki topadi."""
+    if account.user_id != user.id:
+        raise ValueError("Akkaunt bu foydalanuvchiga tegishli emas")
     out: list[uuid.UUID] = []
     for cid in telegram_chat_ids:
         g = db.execute(
-            select(Group).where(Group.user_id == user.id, Group.telegram_chat_id == cid)
+            select(Group).where(
+                Group.user_id == user.id,
+                Group.account_id == account.id,
+                Group.telegram_chat_id == int(cid),
+            )
         ).scalar_one_or_none()
         if not g:
-            g = Group(user_id=user.id, telegram_chat_id=int(cid), is_valid=True)
+            g = Group(user_id=user.id, account_id=account.id, telegram_chat_id=int(cid), is_valid=True)
             db.add(g)
             db.flush()
         out.append(g.id)
     return out
 
 
+def ensure_groups_for_user(db: Session, user: User, telegram_chat_ids: list[int]) -> list[uuid.UUID]:
+    """Eski API: foydalanuvchining bitta faol akkaunti uchun ``ensure_groups_for_account``."""
+    acc = db.execute(
+        select(Account).where(Account.user_id == user.id, Account.status == "active").order_by(Account.created_at)
+    ).scalars().first()
+    if not acc:
+        raise ValueError("Faol Telethon akkaunti yo'q — avval akkaunt ulang")
+    return ensure_groups_for_account(db, user, acc, telegram_chat_ids)
+
+
 def create_campaign(
     db: Session,
     user: User,
+    account_id: uuid.UUID,
     name: str,
     message_text: str,
     interval_minutes: int,
@@ -45,9 +64,13 @@ def create_campaign(
 ) -> Campaign:
     if interval_minutes not in ALLOWED_INTERVAL_MINUTES:
         raise ValueError("interval 6–10 daqiqa orasida bo'lishi kerak")
+    acc = db.get(Account, account_id)
+    if not acc or acc.user_id != user.id:
+        raise ValueError("Akkaunt topilmadi yoki ruxsat yo'q")
 
     c = Campaign(
         user_id=user.id,
+        account_id=account_id,
         name=name,
         message_text=message_text,
         interval_minutes=interval_minutes,
@@ -59,26 +82,33 @@ def create_campaign(
 
     for gid in group_ids:
         g = db.get(Group, gid)
-        if not g or g.user_id != user.id:
+        if not g or g.user_id != user.id or g.account_id != account_id:
             continue
         db.add(CampaignGroup(campaign_id=c.id, group_id=gid))
 
+    set_campaign_accounts(db, c, [account_id])
     return c
 
 
 def create_campaign_from_chat_ids(
     db: Session,
     user: User,
+    account_id: uuid.UUID,
     name: str,
     message_text: str,
     interval_minutes: int,
     telegram_chat_ids: list[int],
     rotation: str = "round_robin",
 ) -> Campaign:
-    gids = ensure_groups_for_user(db, user, telegram_chat_ids)
+    acc = db.get(Account, account_id)
+    if not acc or acc.user_id != user.id:
+        raise ValueError("Akkaunt topilmadi yoki ruxsat yo'q")
+    gids = ensure_groups_for_account(db, user, acc, telegram_chat_ids)
     if not gids:
         raise ValueError("Hech qanday guruh biriktirilmadi")
-    return create_campaign(db, user, name, message_text, interval_minutes, gids, rotation=rotation)
+    return create_campaign(
+        db, user, account_id, name, message_text, interval_minutes, gids, rotation=rotation
+    )
 
 
 def set_campaign_accounts(db: Session, campaign: Campaign, account_ids: list[uuid.UUID]) -> None:
@@ -141,7 +171,7 @@ def replace_campaign_groups(db: Session, campaign: Campaign, group_ids: list[uui
     db.execute(delete(CampaignGroup).where(CampaignGroup.campaign_id == campaign.id))
     for gid in group_ids:
         g = db.get(Group, gid)
-        if not g or g.user_id != campaign.user_id:
+        if not g or g.user_id != campaign.user_id or g.account_id != campaign.account_id:
             continue
         db.add(CampaignGroup(campaign_id=campaign.id, group_id=gid))
     db.add(campaign)
@@ -168,7 +198,7 @@ def start_campaign(db: Session, campaign: Campaign) -> tuple[Schedule, int]:
     others = list(
         db.execute(
             select(Campaign).where(
-                Campaign.user_id == campaign.user_id,
+                Campaign.account_id == campaign.account_id,
                 Campaign.status == "running",
                 Campaign.id != campaign.id,
             )
@@ -201,10 +231,12 @@ def stop_campaign(db: Session, campaign: Campaign) -> None:
     _signal_set_revoke(campaign.id, reason="stop")
 
 
-def delete_user_group(db: Session, user: User, group_id: uuid.UUID) -> bool:
-    """Foydalanuvchining guruh yozuvini o'chiradi; campaign_groups jadvalidagi bog'lanishlar CASCADE bilan yo'qoladi."""
+def delete_user_group(db: Session, user: User, group_id: uuid.UUID, *, account_id: uuid.UUID | None = None) -> bool:
+    """Foydalanuvchining guruh yozuvini o'chiradi; ``account_id`` berilsa — faqat shu akkaunt kontekstida."""
     g = db.get(Group, group_id)
     if not g or g.user_id != user.id:
+        return False
+    if account_id is not None and g.account_id != account_id:
         return False
     db.delete(g)
     db.flush()
@@ -215,6 +247,19 @@ def list_groups_for_user(db: Session, user_id: uuid.UUID) -> list[Group]:
     """Foydalanuvchining barcha guruhlari (`groups` jadvali)."""
     return list(
         db.execute(select(Group).where(Group.user_id == user_id).order_by(Group.created_at.desc()))
+        .scalars()
+        .all()
+    )
+
+
+def list_groups_for_account(db: Session, user_id: uuid.UUID, account_id: uuid.UUID) -> list[Group]:
+    """Berilgan akkaunt uchun guruhlar."""
+    return list(
+        db.execute(
+            select(Group)
+            .where(Group.user_id == user_id, Group.account_id == account_id)
+            .order_by(Group.created_at.desc())
+        )
         .scalars()
         .all()
     )
@@ -232,6 +277,29 @@ def delete_group_by_id(db: Session, group_id: uuid.UUID) -> bool:
 
 def list_user_campaigns(db: Session, user_id: uuid.UUID) -> list[Campaign]:
     return list(db.execute(select(Campaign).where(Campaign.user_id == user_id)).scalars().all())
+
+
+def list_campaigns_for_account(db: Session, user_id: uuid.UUID, account_id: uuid.UUID) -> list[Campaign]:
+    return list(
+        db.execute(
+            select(Campaign).where(Campaign.user_id == user_id, Campaign.account_id == account_id)
+        )
+        .scalars()
+        .all()
+    )
+
+
+def revoke_in_flight_campaigns_for_account(db: Session, user: User, account_id: uuid.UUID) -> list[uuid.UUID]:
+    """Berilgan akkaunt ostidagi kampaniyalarga revoke (Redis)."""
+    cids = list(
+        db.execute(
+            select(Campaign.id).where(Campaign.user_id == user.id, Campaign.account_id == account_id)
+        ).scalars().all()
+    )
+    for cid in cids:
+        _signal_set_revoke(cid, reason="delete_all")
+        _signal_clear_text(cid)
+    return cids
 
 
 def revoke_in_flight_campaigns_for_user(db: Session, user: User) -> list[uuid.UUID]:
@@ -253,6 +321,23 @@ def revoke_in_flight_campaigns_for_user(db: Session, user: User) -> list[uuid.UU
         _signal_set_revoke(cid, reason="delete_all")
         _signal_clear_text(cid)
     return cids
+
+
+def delete_all_campaigns_for_account(db: Session, user: User, account_id: uuid.UUID) -> int:
+    """
+    Berilgan akkaunt ostidagi barcha kampaniyalarni o'chiradi (revoke + Redis).
+    """
+    cids = list(
+        db.execute(
+            select(Campaign.id).where(Campaign.user_id == user.id, Campaign.account_id == account_id)
+        ).scalars().all()
+    )
+    for cid in cids:
+        _signal_set_revoke(cid, reason="delete_all")
+        _signal_clear_text(cid)
+    r = db.execute(delete(Campaign).where(Campaign.user_id == user.id, Campaign.account_id == account_id))
+    db.flush()
+    return int(r.rowcount or 0)
 
 
 def delete_all_campaigns_for_user(db: Session, user: User) -> int:

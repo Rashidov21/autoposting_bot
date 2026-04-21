@@ -58,6 +58,7 @@ CREATE INDEX ix_accounts_status ON accounts (status);
 CREATE TABLE groups (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     telegram_chat_id BIGINT NOT NULL,
     tg_access_hash BIGINT DEFAULT NULL,    -- MTProto access_hash; required by Telethon to resolve channels
     title VARCHAR(512),
@@ -66,14 +67,16 @@ CREATE TABLE groups (
     last_error TEXT,
     last_checked_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (user_id, telegram_chat_id)
+    UNIQUE (user_id, account_id, telegram_chat_id)
 );
 CREATE INDEX ix_groups_user_id ON groups (user_id);
+CREATE INDEX ix_groups_account_id ON groups (account_id);
 CREATE INDEX ix_groups_valid ON groups (user_id, is_valid);
 
 CREATE TABLE campaigns (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     name VARCHAR(255) NOT NULL DEFAULT 'Campaign',
     message_text TEXT NOT NULL,
     interval_minutes INTEGER NOT NULL CHECK (interval_minutes >= 6 AND interval_minutes <= 10),
@@ -86,6 +89,7 @@ CREATE TABLE campaigns (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX ix_campaigns_user_id ON campaigns (user_id);
+CREATE INDEX ix_campaigns_account_id ON campaigns (account_id);
 CREATE INDEX ix_campaigns_status ON campaigns (status);
 
 CREATE TABLE campaign_groups (

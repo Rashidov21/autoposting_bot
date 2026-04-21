@@ -17,7 +17,6 @@ from app.db.models import (
     Account,
     AccountGroupBlocklist,
     Campaign,
-    CampaignAccount,
     CampaignGroup,
     Group,
     Proxy,
@@ -563,16 +562,12 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
         finish_schedule()
         return
 
-    aids = db.execute(select(CampaignAccount.account_id).where(CampaignAccount.campaign_id == campaign_id)).scalars().all()
-    if aids:
-        accounts = list(db.execute(select(Account).where(Account.id.in_(aids))).scalars().all())
-    else:
-        accounts = list(
-            db.execute(
-                select(Account).where(Account.user_id == campaign.user_id, Account.status == "active")
-            ).scalars().all()
-        )
-
+    primary = db.get(Account, campaign.account_id)
+    if not primary or primary.user_id != campaign.user_id:
+        logger.warning("Kampaniya account_id yaroqsiz: campaign=%s account=%s", campaign_id, campaign.account_id)
+        finish_schedule()
+        return
+    accounts = [primary]
     accounts = [a for a in accounts if a.status == "active"]
     now = _utcnow()
     accounts = [a for a in accounts if not a.flood_wait_until or a.flood_wait_until <= now]

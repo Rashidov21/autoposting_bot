@@ -9,6 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.analytics.stats import campaign_totals
 from app.db.models import Account, Campaign, Group, Schedule
@@ -29,6 +30,18 @@ from bot.messages import (
 from bot.states import CampaignStates, LoginStates
 
 router = Router()
+
+
+def _list_active_accounts(db: Session, user_id: uuid.UUID) -> list[Account]:
+    return list(
+        db.execute(
+            select(Account)
+            .where(Account.user_id == user_id, Account.status == "active")
+            .order_by(Account.created_at)
+        )
+        .scalars()
+        .all()
+    )
 
 
 def _parse_interval(text: str) -> int | None:
@@ -63,6 +76,29 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
 @router.message(F.text == BTN_CREATE_CAMPAIGN)
 async def start_campaign(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    db = SessionLocal()
+    try:
+        u = user_service.get_by_telegram_id(db, message.from_user.id)
+        if not u:
+            await message.answer("/start")
+            return
+        accs = _list_active_accounts(db, u.id)
+    finally:
+        db.close()
+    if not accs:
+        await message.answer(
+            "Avval «👤 Akkaunt ulash» orqali Telethon akkaunt ulang.",
+            reply_markup=main_menu(message.from_user.id),
+        )
+        return
+    if len(accs) > 1:
+        await message.answer(
+            "Bir nechta akkaunt: «📢 Xabar» bo'limidan akkaunt tanlang.",
+            reply_markup=main_menu(message.from_user.id),
+        )
+        return
+    await state.update_data(campaign_account_id=str(accs[0].id))
     await state.set_state(CampaignStates.message_text)
     await message.answer("Yuboriladigan xabar matnini yuboring:")
 
@@ -73,6 +109,16 @@ async def campaign_message(message: Message, state: FSMContext) -> None:
         await state.clear()
         await message.answer("Bekor qilindi.", reply_markup=main_menu(message.from_user.id))
         return
+    data_pre = await state.get_data()
+    raw_aid = data_pre.get("campaign_account_id")
+    try:
+        acc_uuid = uuid.UUID(str(raw_aid)) if raw_aid else None
+    except ValueError:
+        acc_uuid = None
+    if not acc_uuid:
+        await state.clear()
+        await message.answer("«📢 Xabar»dan qayta kiring.", reply_markup=main_menu(message.from_user.id))
+        return
     await state.update_data(message_text=message.text.strip())
     db = SessionLocal()
     try:
@@ -81,7 +127,13 @@ async def campaign_message(message: Message, state: FSMContext) -> None:
             await message.answer("/start")
             return
         groups = list(
-            db.execute(select(Group).where(Group.user_id == u.id).order_by(Group.created_at)).scalars().all()
+            db.execute(
+                select(Group)
+                .where(Group.user_id == u.id, Group.account_id == acc_uuid)
+                .order_by(Group.created_at)
+            )
+            .scalars()
+            .all()
         )
     finally:
         db.close()
@@ -125,6 +177,14 @@ async def cb_group_toggle(query: CallbackQuery, state: FSMContext) -> None:
     else:
         sel.add(gid)
     await state.update_data(sel_groups=list(sel))
+    raw_aid = data.get("campaign_account_id")
+    try:
+        acc_uuid = uuid.UUID(str(raw_aid)) if raw_aid else None
+    except ValueError:
+        acc_uuid = None
+    if not acc_uuid:
+        await query.answer("Sessiya buzildi", show_alert=True)
+        return
     db = SessionLocal()
     try:
         u = user_service.get_by_telegram_id(db, query.from_user.id)
@@ -132,7 +192,13 @@ async def cb_group_toggle(query: CallbackQuery, state: FSMContext) -> None:
             await query.answer("Sessiya yo'q", show_alert=True)
             return
         groups = list(
-            db.execute(select(Group).where(Group.user_id == u.id).order_by(Group.created_at)).scalars().all()
+            db.execute(
+                select(Group)
+                .where(Group.user_id == u.id, Group.account_id == acc_uuid)
+                .order_by(Group.created_at)
+            )
+            .scalars()
+            .all()
         )
     finally:
         db.close()
@@ -186,13 +252,26 @@ async def campaign_chats(message: Message, state: FSMContext) -> None:
             await message.answer("Noto'g'ri format. Qayta yuboring.")
             return
 
+    data_st = await state.get_data()
+    raw_aid = data_st.get("campaign_account_id")
+    try:
+        acc_uuid = uuid.UUID(str(raw_aid)) if raw_aid else None
+    except ValueError:
+        acc_uuid = None
     db = SessionLocal()
     try:
         u = user_service.get_by_telegram_id(db, message.from_user.id)
         if not u:
             await message.answer("/start")
             return
-        gids = campaign_service.ensure_groups_for_user(db, u, chats)
+        if not acc_uuid:
+            await message.answer("Sessiya buzildi. Qaytadan «📢 Xabar».")
+            return
+        acc = db.get(Account, acc_uuid)
+        if not acc or acc.user_id != u.id:
+            await message.answer("Akkaunt topilmadi.")
+            return
+        gids = campaign_service.ensure_groups_for_account(db, u, acc, chats)
         db.commit()
     except Exception:
         db.rollback()
@@ -220,6 +299,11 @@ async def campaign_interval(message: Message, state: FSMContext) -> None:
         await message.answer("Tugmalardan birini tanlang.")
         return
     data = await state.get_data()
+    raw_aid = data.get("campaign_account_id")
+    try:
+        acc_uuid = uuid.UUID(str(raw_aid)) if raw_aid else None
+    except ValueError:
+        acc_uuid = None
     await state.clear()
 
     db = SessionLocal()
@@ -227,6 +311,9 @@ async def campaign_interval(message: Message, state: FSMContext) -> None:
         u = user_service.get_by_telegram_id(db, message.from_user.id)
         if not u:
             await message.answer("Foydalanuvchi topilmadi. /start")
+            return
+        if not acc_uuid:
+            await message.answer("Sessiya buzildi.", reply_markup=main_menu(message.from_user.id))
             return
         gids_raw = data.get("group_ids")
         if not gids_raw:
@@ -236,10 +323,11 @@ async def campaign_interval(message: Message, state: FSMContext) -> None:
             )
             return
         gids = [uuid.UUID(x) for x in gids_raw]
-        campaign_service.delete_all_campaigns_for_user(db, u)
+        campaign_service.delete_all_campaigns_for_account(db, u, acc_uuid)
         c = campaign_service.create_campaign(
             db,
             u,
+            acc_uuid,
             "Xabar",
             data["message_text"],
             iv,

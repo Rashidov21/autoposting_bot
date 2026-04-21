@@ -138,8 +138,10 @@ async def send_campaign_status(message: Message, telegram_id: int) -> None:
             sch = db.execute(select(Schedule).where(Schedule.campaign_id == c.id)).scalar_one_or_none()
             st = campaign_totals(db, c.id)
             name = (c.name or "Xabar").strip() or "Xabar"
+            acc = db.get(Account, c.account_id)
+            acc_line = f"👤 {acc.phone.strip()}\n" if acc and (acc.phone or "").strip() else ""
             body = _format_campaign_body(c, sch, st)
-            block = f"{_CARD_SEP}\n📌 {i}) {name}\n{body}\n{_CARD_SEP}"
+            block = f"{_CARD_SEP}\n📌 {i}) {name}\n{acc_line}{body}\n{_CARD_SEP}"
             blocks.append(block)
             cid = str(c.id)
             label = name[:18] + "…" if len(name) > 18 else name

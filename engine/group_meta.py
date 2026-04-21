@@ -49,24 +49,15 @@ async def sync_groups_titles_for_ids(db: Session, group_ids: list[uuid.UUID]) ->
     groups = list(db.execute(select(Group).where(Group.id.in_(group_ids))).scalars().all())
     if not groups:
         return
-    by_user: dict[uuid.UUID, list[Group]] = {}
+    by_account: dict[uuid.UUID, list[Group]] = {}
     for g in groups:
-        by_user.setdefault(g.user_id, []).append(g)
+        by_account.setdefault(g.account_id, []).append(g)
 
-    for uid, glist in by_user.items():
-        # scalar_one_or_none bu yerda xavfli: foydalanuvchida bir nechta active account bo'lishi mumkin.
-        # Shuning uchun birinchi mavjud active account olinadi.
-        acc = (
-            db.execute(select(Account).where(Account.user_id == uid, Account.status == "active"))
-            .scalars()
-            .first()
-        )
-        # Fallback: userda active akkaunt bo'lmasa, tizimdagi istalgan active akkaunt bilan sinab ko'ramiz.
-        if not acc:
-            # Tizimda ham bir nechta active account bo'lishi mumkin.
-            acc = db.execute(select(Account).where(Account.status == "active")).scalars().first()
-        if not acc:
+    for aid, glist in by_account.items():
+        acc = db.get(Account, aid)
+        if not acc or acc.status != "active":
             continue
+        uid = acc.user_id
         proxy = db.get(Proxy, acc.proxy_id) if acc.proxy_id else None
         try:
             client = build_client(acc, proxy)
@@ -109,9 +100,16 @@ async def sync_groups_titles_for_ids(db: Session, group_ids: list[uuid.UUID]) ->
                     logger.info("Guruh nomi olinmadi peer=%s: %s", g.telegram_chat_id, e)
                 db.add(g)
                 if g.title:
-                    # Bir xil chat_id boshqa userlarda ham bo'lsa, ma'lumotlarni ularga ham ko'chiramiz.
+                    # Bir xil chat_id shu akkaunt ostidagi boshqa yozuvlarga (kamdan-kam).
                     same_chat_groups = list(
-                        db.execute(select(Group).where(Group.telegram_chat_id == g.telegram_chat_id)).scalars().all()
+                        db.execute(
+                            select(Group).where(
+                                Group.telegram_chat_id == g.telegram_chat_id,
+                                Group.account_id == g.account_id,
+                            )
+                        )
+                        .scalars()
+                        .all()
                     )
                     for x in same_chat_groups:
                         x.title = g.title

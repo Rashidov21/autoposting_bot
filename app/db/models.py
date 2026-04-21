@@ -90,6 +90,8 @@ class Account(Base):
 
     user: Mapped["User"] = relationship(back_populates="accounts")
     proxy: Mapped[Optional["Proxy"]] = relationship(back_populates="accounts")
+    groups: Mapped[list["Group"]] = relationship(back_populates="account")
+    campaigns: Mapped[list["Campaign"]] = relationship(back_populates="account")
 
 
 class Group(Base):
@@ -97,6 +99,7 @@ class Group(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("accounts.id", ondelete="CASCADE"))
     telegram_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     tg_access_hash: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     title: Mapped[Optional[str]] = mapped_column(String(512))
@@ -107,8 +110,11 @@ class Group(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="groups")
+    account: Mapped["Account"] = relationship(back_populates="groups")
 
-    __table_args__ = (UniqueConstraint("user_id", "telegram_chat_id", name="uq_group_user_tg"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "account_id", "telegram_chat_id", name="uq_group_user_account_tg"),
+    )
 
 
 class Campaign(Base):
@@ -116,6 +122,7 @@ class Campaign(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("accounts.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(255), default="Campaign")
     message_text: Mapped[str] = mapped_column(Text)
     interval_minutes: Mapped[int] = mapped_column(Integer)
@@ -130,6 +137,7 @@ class Campaign(Base):
     )
 
     user: Mapped["User"] = relationship(back_populates="campaigns")
+    account: Mapped["Account"] = relationship(back_populates="campaigns")
     schedule: Mapped[Optional["Schedule"]] = relationship(back_populates="campaign", uselist=False)
 
 

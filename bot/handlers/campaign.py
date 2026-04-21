@@ -11,7 +11,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from sqlalchemy import select
 
-from app.db.models import Campaign, Group
+from app.db.models import Account, Campaign, Group, User
 from app.db.session import SessionLocal
 from app.services import campaigns as campaign_service
 from app.services.campaigns import ALLOWED_INTERVAL_MINUTES
@@ -55,6 +55,68 @@ from bot.messages import (
 from bot.states import CampaignStates
 
 router = Router(name="campaign")
+
+
+def _active_accounts(db, user_id: uuid.UUID) -> list[Account]:
+    return list(
+        db.execute(
+            select(Account)
+            .where(Account.user_id == user_id, Account.status == "active")
+            .order_by(Account.created_at)
+        )
+        .scalars()
+        .all()
+    )
+
+
+def _state_account_uuid(data: dict) -> uuid.UUID | None:
+    raw = data.get("campaign_account_id")
+    if not raw:
+        return None
+    try:
+        return uuid.UUID(str(raw))
+    except ValueError:
+        return None
+
+
+def _account_short_label(acc: Account | None) -> str:
+    if not acc:
+        return "—"
+    if (acc.phone or "").strip():
+        return acc.phone.strip()
+    return str(acc.id)[:8] + "…"
+
+
+async def _present_xabar_menu(message: Message, state: FSMContext, u: User, account_id: uuid.UUID) -> None:
+    await state.update_data(campaign_account_id=str(account_id))
+    db = SessionLocal()
+    try:
+        camps = campaign_service.list_campaigns_for_account(db, u.id, account_id)
+        acc = db.get(Account, account_id)
+    finally:
+        db.close()
+    if not camps:
+        await state.set_state(CampaignStates.message_text)
+        await message.answer(
+            MSG_CAMPAIGN_PROMPT_TEXT,
+            reply_markup=reply_main_menu(message.from_user.id),
+        )
+        return
+    prim = next((x for x in camps if x.status == "running"), None) or camps[0]
+    cid = str(prim.id)
+    raw = (prim.message_text or "").strip()
+    preview = raw[:400] + ("…" if len(raw) > 400 else "")
+    extra = ""
+    if len(camps) > 1:
+        extra = f"\n\nℹ️ Shu akkauntda {len(camps)} ta xabar. Boshqalari: «{BTN_STATUS}»."
+    acc_lbl = _account_short_label(acc)
+    text = (
+        f"{MSG_XABAR_PANEL_CAPTION}{extra}\n\n"
+        f"👤 Akkaunt: {acc_lbl}\n\n"
+        f"📝 Matn (boshlanishi):\n{preview or '—'}\n\n"
+        f"⏱ Interval: {prim.interval_minutes} daq · Holat: {_status_uz(prim.status)}"
+    )
+    await message.answer(text, reply_markup=_xabar_panel_kb(cid))
 
 
 def _status_uz(status: str) -> str:
@@ -119,12 +181,16 @@ def _group_rows(
     return rows
 
 
-async def _send_groups_prompt(message: Message, state: FSMContext, user_id: uuid.UUID) -> None:
+async def _send_groups_prompt(
+    message: Message, state: FSMContext, user_id: uuid.UUID, account_id: uuid.UUID
+) -> None:
     db = SessionLocal()
     try:
         groups = list(
             db.execute(
-                select(Group).where(Group.user_id == user_id).order_by(Group.created_at.desc())
+                select(Group)
+                .where(Group.user_id == user_id, Group.account_id == account_id)
+                .order_by(Group.created_at.desc())
             )
             .scalars()
             .all()
@@ -134,7 +200,9 @@ async def _send_groups_prompt(message: Message, state: FSMContext, user_id: uuid
             db.commit()
             groups = list(
                 db.execute(
-                    select(Group).where(Group.user_id == user_id).order_by(Group.created_at.desc())
+                    select(Group)
+                    .where(Group.user_id == user_id, Group.account_id == account_id)
+                    .order_by(Group.created_at.desc())
                 )
                 .scalars()
                 .all()
@@ -201,31 +269,54 @@ async def xabar_entry(message: Message, state: FSMContext) -> None:
         if not u:
             await message.answer("/start")
             return
-        camps = campaign_service.list_user_campaigns(db, u.id)
+        accounts = _active_accounts(db, u.id)
     finally:
         db.close()
 
-    if not camps:
-        await state.set_state(CampaignStates.message_text)
+    if not accounts:
         await message.answer(
-            MSG_CAMPAIGN_PROMPT_TEXT,
+            "📭 Faol Telethon akkaunti yo'q. Avval «👤 Akkaunt ulash» orqali akkaunt ulang.",
             reply_markup=reply_main_menu(message.from_user.id),
         )
         return
 
-    prim = next((x for x in camps if x.status == "running"), None) or camps[0]
-    cid = str(prim.id)
-    raw = (prim.message_text or "").strip()
-    preview = raw[:400] + ("…" if len(raw) > 400 else "")
-    extra = ""
-    if len(camps) > 1:
-        extra = f"\n\nℹ️ Jami {len(camps)} ta xabar. Boshqalari: «{BTN_STATUS}»."
-    text = (
-        f"{MSG_XABAR_PANEL_CAPTION}{extra}\n\n"
-        f"📝 Matn (boshlanishi):\n{preview or '—'}\n\n"
-        f"⏱ Interval: {prim.interval_minutes} daq · Holat: {_status_uz(prim.status)}"
-    )
-    await message.answer(text, reply_markup=_xabar_panel_kb(cid))
+    if len(accounts) > 1:
+        rows: list[list[InlineKeyboardButton]] = []
+        for a in accounts:
+            label = _account_short_label(a)
+            rows.append([InlineKeyboardButton(text=f"👤 {label}", callback_data=f"campacc:{a.id}")])
+        await message.answer(
+            "Qaysi Telethon akkaunti uchun xabarlarni boshqarasiz?",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        )
+        return
+
+    await _present_xabar_menu(message, state, u, accounts[0].id)
+
+
+@router.callback_query(F.data.startswith("campacc:"))
+async def xabar_pick_account(callback: CallbackQuery, state: FSMContext) -> None:
+    raw = (callback.data or "").replace("campacc:", "", 1).strip()
+    try:
+        aid = uuid.UUID(raw)
+    except ValueError:
+        await callback.answer("Xato", show_alert=True)
+        return
+    db = SessionLocal()
+    try:
+        u = user_service.get_by_telegram_id(db, callback.from_user.id)
+        if not u:
+            await callback.answer("/start")
+            return
+        acc = db.get(Account, aid)
+        if not acc or acc.user_id != u.id or acc.status != "active":
+            await callback.answer("Akkaunt topilmadi", show_alert=True)
+            return
+    finally:
+        db.close()
+    await state.clear()
+    await _present_xabar_menu(callback.message, state, u, aid)
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("xab:txt:"))
@@ -301,10 +392,11 @@ async def xab_grp_start(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(CampaignStates.select_groups)
     await state.update_data(
         editing_campaign_id=str(cid),
+        campaign_account_id=str(c.account_id),
         selected_group_ids=[str(x) for x in gids],
         message_text="",
     )
-    await _send_groups_prompt(callback.message, state, u.id)
+    await _send_groups_prompt(callback.message, state, u.id, c.account_id)
     await callback.answer()
 
 
@@ -325,7 +417,7 @@ async def xab_new_start(callback: CallbackQuery, state: FSMContext) -> None:
         if not c or c.user_id != u.id:
             await callback.answer("Topilmadi", show_alert=True)
             return
-        campaign_service.revoke_in_flight_campaigns_for_user(db, u)
+        campaign_service.revoke_in_flight_campaigns_for_account(db, u, c.account_id)
         db.commit()
     except Exception as e:
         db.rollback()
@@ -345,7 +437,7 @@ async def xab_new_start(callback: CallbackQuery, state: FSMContext) -> None:
         if not u2:
             await callback.answer("/start")
             return
-        campaign_service.delete_all_campaigns_for_user(db, u2)
+        campaign_service.delete_all_campaigns_for_account(db, u2, c.account_id)
         db.commit()
     except Exception as e:
         db.rollback()
@@ -356,6 +448,7 @@ async def xab_new_start(callback: CallbackQuery, state: FSMContext) -> None:
 
     await state.clear()
     await state.set_state(CampaignStates.message_text)
+    await state.update_data(campaign_account_id=str(c.account_id))
     await callback.message.answer(
         MSG_CAMPAIGN_PROMPT_TEXT,
         reply_markup=reply_main_menu(callback.from_user.id),
@@ -469,6 +562,18 @@ async def campaign_message(message: Message, state: FSMContext) -> None:
         await state.clear()
         await message.answer("Bekor qilindi.", reply_markup=reply_main_menu(message.from_user.id))
         return
+    data_pre = await state.get_data()
+    raw_aid = data_pre.get("campaign_account_id")
+    if not raw_aid:
+        await state.clear()
+        await message.answer("Sessiya buzildi. «📢 Xabar»ni qayta bosing.", reply_markup=reply_main_menu(message.from_user.id))
+        return
+    try:
+        acc_uuid = uuid.UUID(str(raw_aid))
+    except ValueError:
+        await state.clear()
+        await message.answer("Sessiya buzildi. «📢 Xabar»ni qayta bosing.", reply_markup=reply_main_menu(message.from_user.id))
+        return
     await state.update_data(message_text=message.text.strip())
     await state.set_state(CampaignStates.select_groups)
     await state.update_data(selected_group_ids=[], editing_campaign_id=None)
@@ -482,7 +587,7 @@ async def campaign_message(message: Message, state: FSMContext) -> None:
         uid = u.id
     finally:
         db.close()
-    await _send_groups_prompt(message, state, uid)
+    await _send_groups_prompt(message, state, uid, acc_uuid)
 
 
 @router.callback_query(StateFilter(CampaignStates.select_groups), F.data.startswith("grp:del:"))
@@ -493,13 +598,18 @@ async def grp_delete(callback: CallbackQuery, state: FSMContext) -> None:
     except ValueError:
         await callback.answer("Xato")
         return
+    data_acc = await state.get_data()
+    aid_ctx = _state_account_uuid(data_acc)
+    if not aid_ctx:
+        await callback.answer("Sessiya buzildi", show_alert=True)
+        return
     db = SessionLocal()
     try:
         u = user_service.get_by_telegram_id(db, callback.from_user.id)
         if not u:
             await callback.answer("/start")
             return
-        if not campaign_service.delete_user_group(db, u, gid_u):
+        if not campaign_service.delete_user_group(db, u, gid_u, account_id=aid_ctx):
             await callback.answer("Topilmadi", show_alert=True)
             return
         db.commit()
@@ -523,7 +633,9 @@ async def grp_delete(callback: CallbackQuery, state: FSMContext) -> None:
             return
         groups = list(
             db.execute(
-                select(Group).where(Group.user_id == u.id).order_by(Group.created_at.desc())
+                select(Group)
+                .where(Group.user_id == u.id, Group.account_id == aid_ctx)
+                .order_by(Group.created_at.desc())
             )
             .scalars()
             .all()
@@ -553,6 +665,10 @@ async def grp_toggle(callback: CallbackQuery, state: FSMContext) -> None:
         sel.add(gid_str)
     await state.update_data(selected_group_ids=list(sel))
 
+    aid_ctx = _state_account_uuid(data)
+    if not aid_ctx:
+        await callback.answer("Sessiya buzildi", show_alert=True)
+        return
     db = SessionLocal()
     try:
         u = user_service.get_by_telegram_id(db, callback.from_user.id)
@@ -561,7 +677,9 @@ async def grp_toggle(callback: CallbackQuery, state: FSMContext) -> None:
             return
         groups = list(
             db.execute(
-                select(Group).where(Group.user_id == u.id).order_by(Group.created_at.desc())
+                select(Group)
+                .where(Group.user_id == u.id, Group.account_id == aid_ctx)
+                .order_by(Group.created_at.desc())
             )
             .scalars()
             .all()
@@ -659,6 +777,12 @@ async def grp_chat_id_enter(message: Message, state: FSMContext) -> None:
     except ValueError:
         await message.answer("Chat ID butun son bo'lishi kerak (masalan -100...).")
         return
+    data_st = await state.get_data()
+    aid_ctx = _state_account_uuid(data_st)
+    if not aid_ctx:
+        await message.answer("Sessiya buzildi. «📢 Xabar»ni qayta bosing.", reply_markup=reply_main_menu(message.from_user.id))
+        await state.clear()
+        return
     db = SessionLocal()
     try:
         u = user_service.get_by_telegram_id(db, message.from_user.id)
@@ -666,7 +790,12 @@ async def grp_chat_id_enter(message: Message, state: FSMContext) -> None:
             await message.answer("/start")
             await state.clear()
             return
-        gids = campaign_service.ensure_groups_for_user(db, u, [cid])
+        acc = db.get(Account, aid_ctx)
+        if not acc or acc.user_id != u.id:
+            await message.answer("Akkaunt topilmadi.")
+            await state.clear()
+            return
+        gids = campaign_service.ensure_groups_for_account(db, u, acc, [cid])
         db.commit()
         new_id = str(gids[0])
     except Exception as e:
@@ -689,7 +818,7 @@ async def grp_chat_id_enter(message: Message, state: FSMContext) -> None:
     finally:
         db2.close()
     if uid:
-        await _send_groups_prompt(message, state, uid)
+        await _send_groups_prompt(message, state, uid, aid_ctx)
 
 
 @router.message(CampaignStates.interval, F.text)
@@ -705,6 +834,11 @@ async def campaign_interval(message: Message, state: FSMContext) -> None:
         await message.answer("Tugmalardan birini tanlang.")
         return
     data = await state.get_data()
+    raw_acc = data.get("campaign_account_id")
+    try:
+        acc_uuid = uuid.UUID(str(raw_acc)) if raw_acc else None
+    except ValueError:
+        acc_uuid = None
     await state.clear()
 
     db = SessionLocal()
@@ -713,6 +847,9 @@ async def campaign_interval(message: Message, state: FSMContext) -> None:
         if not u:
             await message.answer("Foydalanuvchi topilmadi. /start")
             return
+        if not acc_uuid:
+            await message.answer("Sessiya buzildi. «📢 Xabar»ni qayta bosing.", reply_markup=reply_main_menu(message.from_user.id))
+            return
         gids = [uuid.UUID(x) for x in (data.get("selected_group_ids") or [])]
         if not gids:
             await message.answer("Guruh tanlanmagan.", reply_markup=reply_main_menu(message.from_user.id))
@@ -720,6 +857,7 @@ async def campaign_interval(message: Message, state: FSMContext) -> None:
         c = campaign_service.create_campaign(
             db,
             u,
+            acc_uuid,
             MSG_CAMPAIGN_NAME_DEFAULT,
             data["message_text"],
             iv,

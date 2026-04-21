@@ -35,7 +35,14 @@ async def refresh_group_titles_from_bot(bot: Bot, db: Session, groups: list[Grou
         if not title:
             continue
         same_chat = list(
-            db.execute(select(Group).where(Group.telegram_chat_id == g.telegram_chat_id)).scalars().all()
+            db.execute(
+                select(Group).where(
+                    Group.telegram_chat_id == g.telegram_chat_id,
+                    Group.account_id == g.account_id,
+                )
+            )
+            .scalars()
+            .all()
         )
         for x in same_chat:
             x.title = title[:512]
