@@ -14,6 +14,7 @@ from app.analytics.stats import campaign_totals
 from app.db.models import Account, Campaign, Group, Schedule
 from app.db.session import SessionLocal
 from app.services import campaigns as campaign_service
+from app.services.campaigns import ALLOWED_INTERVAL_MINUTES
 from app.services.group_titles_bot import refresh_group_titles_from_bot
 from app.services import users as user_service
 from bot.formatting import format_local_datetime, group_display_label
@@ -35,7 +36,7 @@ def _parse_interval(text: str) -> int | None:
     if not m:
         return None
     v = int(m.group(1))
-    return v if v in (3, 5, 10, 15) else None
+    return v if v in ALLOWED_INTERVAL_MINUTES else None
 
 
 @router.message(CommandStart())

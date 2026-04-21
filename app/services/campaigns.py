@@ -12,6 +12,8 @@ from engine.campaign_signals import clear_text as _signal_clear_text
 from engine.campaign_signals import set_revoke as _signal_set_revoke
 from engine.campaign_signals import set_text as _signal_set_text
 
+ALLOWED_INTERVAL_MINUTES: tuple[int, ...] = tuple(range(6, 11))
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -41,8 +43,8 @@ def create_campaign(
     group_ids: list[uuid.UUID],
     rotation: str = "round_robin",
 ) -> Campaign:
-    if interval_minutes not in (3, 5, 10, 15):
-        raise ValueError("interval 3, 5, 10 yoki 15 bo'lishi kerak")
+    if interval_minutes not in ALLOWED_INTERVAL_MINUTES:
+        raise ValueError("interval 6–10 daqiqa orasida bo'lishi kerak")
 
     c = Campaign(
         user_id=user.id,
@@ -126,8 +128,8 @@ def update_campaign_message_text(db: Session, campaign: Campaign, message_text: 
 
 
 def update_campaign_interval_minutes(db: Session, campaign: Campaign, interval_minutes: int) -> None:
-    if interval_minutes not in (3, 5, 10, 15):
-        raise ValueError("interval 3, 5, 10 yoki 15 bo'lishi kerak")
+    if interval_minutes not in ALLOWED_INTERVAL_MINUTES:
+        raise ValueError("interval 6–10 daqiqa orasida bo'lishi kerak")
     campaign.interval_minutes = interval_minutes
     db.add(campaign)
     # Kichraytirilgan intervalda esa cap bilan yaqinlashtirish mantiqli

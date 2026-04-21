@@ -24,10 +24,7 @@ from bot.messages import (
     INLINE_NAV_NEW_XABAR,
     INLINE_NAV_STATUS,
     INLINE_HELP_ACCOUNT_STATUS,
-    INTERVAL_10,
-    INTERVAL_15,
-    INTERVAL_3,
-    INTERVAL_5,
+    INTERVAL_BUTTONS,
 )
 
 
@@ -133,10 +130,18 @@ def groups_inline_kb(rows: list[tuple]) -> InlineKeyboardMarkup:
 
 
 def intervals_kb() -> ReplyKeyboardMarkup:
+    b = INTERVAL_BUTTONS
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=INTERVAL_3), KeyboardButton(text=INTERVAL_5)],
-            [KeyboardButton(text=INTERVAL_10), KeyboardButton(text=INTERVAL_15)],
+            [
+                KeyboardButton(text=b[0]),
+                KeyboardButton(text=b[1]),
+                KeyboardButton(text=b[2]),
+            ],
+            [
+                KeyboardButton(text=b[3]),
+                KeyboardButton(text=b[4]),
+            ],
             [KeyboardButton(text=BTN_CANCEL)],
         ],
         resize_keyboard=True,

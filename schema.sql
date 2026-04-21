@@ -76,7 +76,7 @@ CREATE TABLE campaigns (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name VARCHAR(255) NOT NULL DEFAULT 'Campaign',
     message_text TEXT NOT NULL,
-    interval_minutes INTEGER NOT NULL CHECK (interval_minutes IN (3, 5, 10, 15)),
+    interval_minutes INTEGER NOT NULL CHECK (interval_minutes >= 6 AND interval_minutes <= 10),
     status VARCHAR(32) NOT NULL DEFAULT 'draft',
     rotation VARCHAR(32) NOT NULL DEFAULT 'round_robin',
     skip_group_probability DOUBLE PRECISION NOT NULL DEFAULT 0.08,

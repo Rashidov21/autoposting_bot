@@ -20,7 +20,7 @@ class CreateCampaignBody(BaseModel):
     telegram_id: int
     name: str = "Kampaniya"
     message_text: str
-    interval_minutes: int = Field(..., description="3, 5, 10 yoki 15")
+    interval_minutes: int = Field(..., ge=6, le=10, description="6 dan 10 gacha daqiqa")
     group_ids: list[str]
 
 

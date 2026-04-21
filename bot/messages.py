@@ -22,13 +22,8 @@ MSG_FSM_SWITCH_MENU = (
     "Yoki «📢 Xabar»dan xabar sozlashni davom ettiring."
 )
 
-# Interval tanlash (xabar)
-INTERVAL_3 = "3 daqiqa"
-INTERVAL_5 = "5 daqiqa"
-INTERVAL_10 = "10 daqiqa"
-INTERVAL_15 = "15 daqiqa"
-
-INTERVAL_BUTTONS: tuple[str, ...] = (INTERVAL_3, INTERVAL_5, INTERVAL_10, INTERVAL_15)
+# Interval tanlash (xabar): 6–10 daqiqa
+INTERVAL_BUTTONS: tuple[str, ...] = tuple(f"{n} daqiqa" for n in range(6, 11))
 
 MAIN_MENU_TEXTS: frozenset[str] = frozenset(
     {
