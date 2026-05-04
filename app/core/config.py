@@ -84,6 +84,25 @@ class Settings(BaseSettings):
     sender_retry_flood_retries: int = Field(default=2, ge=0, le=8)
     sender_entity_cache_size: int = Field(default=500, ge=50, le=5000)
     schedule_due_campaigns_batch_limit: int = Field(default=300, ge=10, le=5000)
+    # Reja: masshtab — ``next_run_at`` jitter/stagger va Celery countdown (Faza 0)
+    schedule_finish_jitter_max_seconds: float = Field(default=90.0, ge=0.0, le=3600.0)
+    schedule_finish_stagger_max_seconds: int = Field(
+        default=0,
+        ge=0,
+        le=3600,
+        description="0=disabled. Kampaniya ID bo'yicha barqaror stagger (soniya).",
+    )
+    schedule_due_enqueue_countdown_max_seconds: int = Field(
+        default=0,
+        ge=0,
+        le=600,
+        description="0=disabled. process_campaign uchun Celery countdown tasodifiy 0..N.",
+    )
+    # Reja: akkaunt bo'yicha Redis rate limit (Faza 1); 0 = o'chiq
+    sender_account_max_sends_per_minute: int = Field(default=0, ge=0, le=120)
+    # Reja: uzoq muddatli Telethon sessiya (Faza 2)
+    session_runner_enabled: bool = False
+    session_runner_queue_key: str = "session_runner:queue"
     campaign_lock_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
     campaign_soft_time_limit_seconds: int = Field(default=2400, ge=60, le=7200)
     campaign_time_limit_seconds: int = Field(default=3600, ge=120, le=10800)

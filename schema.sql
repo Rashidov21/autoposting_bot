@@ -95,8 +95,10 @@ CREATE INDEX ix_campaigns_status ON campaigns (status);
 CREATE TABLE campaign_groups (
     campaign_id UUID NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
     group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    last_sent_at TIMESTAMPTZ,
     PRIMARY KEY (campaign_id, group_id)
 );
+CREATE INDEX ix_campaign_groups_last_sent ON campaign_groups (campaign_id, last_sent_at DESC NULLS LAST);
 
 CREATE TABLE campaign_accounts (
     campaign_id UUID NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,

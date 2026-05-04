@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import random
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -9,10 +11,17 @@ from sqlalchemy import delete, select
 from app.db.models import Campaign, Schedule, SendLog
 from app.db.session import SessionLocal
 from app.core.config import get_settings
+from engine.redis_pool import get_redis
 from engine.sender import run_campaign_round_sync
 from worker.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+
+def enqueue_session_runner_campaign(campaign_id: uuid.UUID) -> None:
+    settings = get_settings()
+    r = get_redis()
+    r.rpush(settings.session_runner_queue_key, json.dumps({"campaign_id": str(campaign_id)}))
 
 
 @celery_app.task(name="worker.tasks.schedule_due_campaigns")
@@ -34,12 +43,20 @@ def schedule_due_campaigns() -> None:
             return
         queued = 0
         for s in schedules:
-            tid = f"pc-{s.campaign_id}-{int(s.next_run_at.timestamp())}"
             try:
+                if settings.session_runner_enabled:
+                    enqueue_session_runner_campaign(s.campaign_id)
+                    queued += 1
+                    continue
+                tid = f"pc-{s.campaign_id}-{int(s.next_run_at.timestamp())}"
+                countdown = 0
+                if settings.schedule_due_enqueue_countdown_max_seconds > 0:
+                    countdown = random.randint(0, settings.schedule_due_enqueue_countdown_max_seconds)
                 process_campaign.apply_async(
                     args=[str(s.campaign_id)],
                     task_id=tid,
                     queue=settings.celery_campaign_queue,
+                    countdown=countdown,
                 )
                 queued += 1
             except Exception as e:
@@ -52,6 +69,14 @@ def schedule_due_campaigns() -> None:
 @celery_app.task(name="worker.tasks.process_campaign")
 def process_campaign(campaign_id: str) -> None:
     cid = uuid.UUID(campaign_id)
+    settings = get_settings()
+    if settings.session_runner_enabled:
+        try:
+            enqueue_session_runner_campaign(cid)
+        except Exception:
+            logger.exception("process_campaign enqueue %s", campaign_id)
+            raise
+        return
     db = SessionLocal()
     try:
         run_campaign_round_sync(db, cid)

@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir --retries 25 --timeout 600 \
 COPY app app
 COPY bot bot
 COPY worker worker
+COPY runner runner
 COPY engine engine
 COPY scripts scripts
 COPY schema.sql schema.sql

@@ -7,9 +7,9 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session, selectinload
-from telethon import errors
+from telethon import TelegramClient, errors
 
 from app.core.config import get_settings
 from app.core.security import encrypt_text
@@ -25,8 +25,10 @@ from app.db.models import (
 from app.db.models import Schedule
 from engine.anti_ban import maybe_skip_group, shuffle_order, vary_message_text, warm_up_multiplier
 from engine.campaign_signals import clear_revoke, get_text as signal_get_text, is_revoked
+from engine.account_rate_limit import wait_account_send_slot_sync
 from engine.client_factory import build_client
 from engine.redis_pool import get_redis
+from engine.telethon_pool import TelethonClientPool
 from engine.telegram_helpers import EntityCache, ensure_joined_entity, resolve_entity, safe_send_message
 
 logger = logging.getLogger(__name__)
@@ -247,6 +249,7 @@ async def _account_worker(
     queue: asyncio.Queue[Group],
     proxy: Proxy | None,
     settings,
+    pooled_client: TelegramClient | None = None,
 ) -> list[_SendOutcome]:
     outcomes: list[_SendOutcome] = []
     sent_by_worker = 0
@@ -265,24 +268,28 @@ async def _account_worker(
     # uchun session payload har roundda kichkina bo'ladi.
     _new_session_str: str | None = None
 
-    try:
-        client = build_client(acc, proxy)
-    except Exception as e:
-        logger.exception("client_build_failed account=%s", acc.id)
-        while not queue.empty():
-            g = queue.get_nowait()
-            outcomes.append(
-                _SendOutcome(
-                    account_id=acc.id,
-                    group_id=g.id,
-                    status="fail",
-                    error_code="client_build",
-                    error_message=str(e),
+    disconnect_in_finally = pooled_client is None
+    if pooled_client is not None:
+        client = pooled_client
+    else:
+        try:
+            client = build_client(acc, proxy)
+        except Exception as e:
+            logger.exception("client_build_failed account=%s", acc.id)
+            while not queue.empty():
+                g = queue.get_nowait()
+                outcomes.append(
+                    _SendOutcome(
+                        account_id=acc.id,
+                        group_id=g.id,
+                        status="fail",
+                        error_code="client_build",
+                        error_message=str(e),
+                    )
                 )
-            )
-        return outcomes
+            return outcomes
 
-    await client.connect()
+        await client.connect()
     try:
         if not await client.is_user_authorized():
             logger.warning("account_unauthorized account=%s", acc.id)
@@ -335,6 +342,14 @@ async def _account_worker(
             # keyingi yuborishdayoq hisobga olinadi (1.A muammo).
             current_text = signal_get_text(redis_client, campaign.id) or fallback_text
             text = vary_message_text(current_text)
+
+            if settings.sender_account_max_sends_per_minute > 0:
+                await asyncio.to_thread(
+                    wait_account_send_slot_sync,
+                    redis_client,
+                    acc.id,
+                    settings.sender_account_max_sends_per_minute,
+                )
 
             wm = warm_up_multiplier(warmup_sent)
             pre_send_delay = random.uniform(
@@ -502,10 +517,11 @@ async def _account_worker(
                 acc.id, _ses_exc,
             )
     finally:
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
+        if disconnect_in_finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
 
     outcomes.append(
         _SendOutcome(
@@ -519,7 +535,12 @@ async def _account_worker(
     return outcomes
 
 
-async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
+async def run_campaign_round(
+    db: Session,
+    campaign_id: uuid.UUID,
+    *,
+    client_pool: TelethonClientPool | None = None,
+) -> None:
     campaign = db.execute(
         select(Campaign).where(Campaign.id == campaign_id).options(selectinload(Campaign.schedule))
     ).scalar_one_or_none()
@@ -530,6 +551,16 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
     sched = campaign.schedule
     if not sched:
         logger.warning("Schedule yo'q: %s", campaign_id)
+        return
+
+    now_gate = _utcnow()
+    if sched.next_run_at > now_gate + timedelta(seconds=1):
+        logger.info(
+            "campaign_round_skipped_not_due campaign=%s next_run_at=%s now=%s",
+            campaign_id,
+            sched.next_run_at,
+            now_gate,
+        )
         return
 
     gids = db.execute(select(CampaignGroup.group_id).where(CampaignGroup.campaign_id == campaign_id)).scalars().all()
@@ -551,9 +582,14 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
             sched.last_run_at = _utcnow()
             sched.next_run_at = _utcnow() + timedelta(seconds=random.uniform(5, 20))
         else:
-            jitter = random.uniform(0, 90)
+            jitter = random.uniform(0, settings.schedule_finish_jitter_max_seconds)
+            delta = timedelta(minutes=campaign.interval_minutes) + timedelta(seconds=jitter)
+            if settings.schedule_finish_stagger_max_seconds > 0:
+                sm = settings.schedule_finish_stagger_max_seconds
+                stable_stagger = campaign.id.int % (sm + 1)
+                delta += timedelta(seconds=stable_stagger)
             sched.last_run_at = _utcnow()
-            sched.next_run_at = _utcnow() + timedelta(minutes=campaign.interval_minutes) + timedelta(seconds=jitter)
+            sched.next_run_at = _utcnow() + delta
         db.add(sched)
         committer.finalize()
 
@@ -603,11 +639,24 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
         # proxy-majburligi yo'q: None qaytadi, build_client direct ulanadi.
         proxies[pid] = p if (p and p.is_healthy) else None
 
+    pooled_by_account: dict[uuid.UUID, TelegramClient | None] = {}
+    if client_pool is not None:
+        for acc in used_accounts:
+            proxy = proxies.get(acc.proxy_id) if acc.proxy_id else None
+            try:
+                pooled_by_account[acc.id] = await client_pool.ensure_client(acc, proxy)
+            except Exception:
+                logger.exception("pool_ensure_failed account=%s", acc.id)
+                pooled_by_account[acc.id] = None
+
     worker_tasks: list[asyncio.Task[list[_SendOutcome]]] = []
     for acc_id in shuffle_order(list(group_queues.keys())):
         acc = account_map.get(acc_id)
         if not acc or acc.status != "active":
             continue
+        pooled: TelegramClient | None = None
+        if client_pool is not None:
+            pooled = pooled_by_account.get(acc_id)
         worker_tasks.append(
             asyncio.create_task(
                 _account_worker(
@@ -616,6 +665,7 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
                     group_queues[acc_id],
                     proxies.get(acc.proxy_id) if acc.proxy_id else None,
                     settings,
+                    pooled_client=pooled,
                 )
             )
         )
@@ -645,6 +695,8 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
                         changed = True
                     if changed:
                         db.add(acc)
+                    if client_pool is not None and acc and (out.session_update or out.account_reauth_required):
+                        await client_pool.invalidate(out.account_id)
                 continue
             if not out.group_id:
                 continue
@@ -652,10 +704,14 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
                 acc = account_map.get(out.account_id)
                 if acc:
                     _mark_account_banned(db, acc, out.error_message or "ACCOUNT_BANNED")
+                if client_pool is not None:
+                    await client_pool.invalidate(out.account_id)
             if out.account_reauth_required:
                 acc = account_map.get(out.account_id)
                 if acc and acc.status == "active":
                     _mark_account_reauth_required(db, acc, out.error_message or "reauth")
+                if client_pool is not None:
+                    await client_pool.invalidate(out.account_id)
             if out.flood_wait_seconds > 0:
                 acc = account_map.get(out.account_id)
                 if acc:
@@ -693,6 +749,15 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
                     },
                 )
             )
+            if out.status == "success" and out.group_id:
+                db.execute(
+                    update(CampaignGroup)
+                    .where(
+                        CampaignGroup.campaign_id == campaign.id,
+                        CampaignGroup.group_id == out.group_id,
+                    )
+                    .values(last_sent_at=_utcnow())
+                )
             committer.step()
 
     finish_schedule(revoked=revoked_mid_round or revoke_was_set_on_entry)
@@ -704,12 +769,13 @@ async def run_campaign_round(db: Session, campaign_id: uuid.UUID) -> None:
         clear_revoke(campaign_id)
 
 
-def run_campaign_round_sync(db: Session, campaign_id: uuid.UUID) -> None:
-    """
-    Celery task entrypoint. Fencing-token + heartbeat bilan Redis lock olinadi.
-    Crash bo'lsa lock TTL (``campaign_lock_ttl_seconds``) bo'yicha bo'shaydi; uzoq ishlaydigan
-    roundlarda esa heartbeat TTL ni uzaytirib boradi.
-    """
+async def run_campaign_round_async(
+    db: Session,
+    campaign_id: uuid.UUID,
+    *,
+    client_pool: TelethonClientPool | None = None,
+) -> None:
+    """Redis lock ostida bitta round (session runner yoki Celery uchun)."""
     from engine.distributed_lock import acquire, release
 
     settings = get_settings()
@@ -724,6 +790,20 @@ def run_campaign_round_sync(db: Session, campaign_id: uuid.UUID) -> None:
         logger.info("Kampaniya bajarilmoqda, takroriy ishga tushirish o'tkazildi: %s", campaign_id)
         return
     try:
-        asyncio.run(run_campaign_round(db, campaign_id))
+        await run_campaign_round(db, campaign_id, client_pool=client_pool)
     finally:
         release(r, held)
+
+
+def run_campaign_round_sync(
+    db: Session,
+    campaign_id: uuid.UUID,
+    *,
+    client_pool: TelethonClientPool | None = None,
+) -> None:
+    """
+    Celery task entrypoint. Fencing-token + heartbeat bilan Redis lock olinadi.
+    Crash bo'lsa lock TTL (``campaign_lock_ttl_seconds``) bo'yicha bo'shaydi; uzoq ishlaydigan
+    roundlarda esa heartbeat TTL ni uzaytirib boradi.
+    """
+    asyncio.run(run_campaign_round_async(db, campaign_id, client_pool=client_pool))

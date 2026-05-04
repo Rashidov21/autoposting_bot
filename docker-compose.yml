@@ -79,6 +79,23 @@ services:
     <<: *depends-full
     logging: *default-logging
 
+  # SESSION_RUNNER_ENABLED=true bo'lsa: Telethon sessiyalarini uzoq muddat ochiq ushlab,
+  # Redis navbatidan kampaniya roundlarini bajaradi. worker_campaign bilan bir vaqtda
+  # ishlamasligi kerak (ikkala yo'l bir xil vazifani ikki marta bajaradi).
+  session_runner:
+    build: .
+    command: python -m runner.main
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *worker-env
+    volumes:
+      - sessions:/app/sessions
+    <<: *depends-full
+    logging: *default-logging
+    profiles:
+      - session_runner
+
   worker_aux:
     build: .
     command: celery -A worker.celery_app:celery_app worker -l info -Q default,scheduler -c ${CELERY_AUX_WORKER_CONCURRENCY:-1} --prefetch-multiplier=${CELERY_WORKER_PREFETCH_MULTIPLIER:-1} --max-tasks-per-child=${CELERY_WORKER_MAX_TASKS_PER_CHILD:-30} --max-memory-per-child=${CELERY_WORKER_MAX_MEMORY_PER_CHILD_KB:-450000}
